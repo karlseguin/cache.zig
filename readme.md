@@ -63,7 +63,7 @@ First, the key will be cloned and managed by the cache. The caller does not have
 
 `value` will be similarly managed by the cache. If `T` defines a method `deinit`, the cache will call `value.deinit(allocator: std.mem.Allocator)` whenever an item is removed from the cache (for whatever reason, including expiration, an explicit call to `cache.del`, or if the cache frees space when it is full). The `Allocator` passed to `deinit` is the `Allocator` that the cache was created with - this may or may not be an allocator that is meaningful to the value.
 
-The third parameter is a `cache.PutConfig`. The 
+The third parameter is a `cache.PutConfig`: 
 
 ```zig
 {
@@ -72,6 +72,6 @@ The third parameter is a `cache.PutConfig`. The
 }
 ```
 
-`size` is the size of the value. This doesn't have to be the actual memory used by the value being cached. In many cases, the default of `1` is reasonable. However, if enforcement of the memory used by the cache is important, than giving an approximate size (as a real memory usage or as a weighted value) will help. For example, if you're caching a string, the length of the string could make a reasonable argument for `size`.
+`size` is the size of the value. This doesn't have to be the actual memory used by the value being cached. In many cases, the default of `1` is reasonable. However, if enforcement of the memory used by the cache is important, giving an approximate size (as memory usage or as a weighted value) will help. For example, if you're caching a string, the length of the string could make a reasonable argument for `size`. 
 
 `ttl` is the length, in second, to keep the value in the cache.

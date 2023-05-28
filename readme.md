@@ -3,22 +3,22 @@ A thread-safe, expiration-aware, LRU(ish) cache for Zig
 
 ```zig
 // package available using Zig's built-in package manager
-const cache = @import("cache");
+const user_cache = @import("cache");
 
-var cache = try cache.Cache(User).init(allocator, .{.max_size = 10000});
-defer cache.deinit();
+var user_cache = try cache.Cache(User).init(allocator, .{.max_size = 10000});
+defer user_cache.deinit();
 
-try cache.put("user1", user1, .{.ttl = 300});
+try user_cache.put("user1", user1, .{.ttl = 300});
 ...
 
-if (cache.get("user1")) |entry| {
+if (user_cache.get("user1")) |entry| {
     const user1 = entry.value;
 } else {
     // not in the cache
 }
 
 // del will return true if the item existed
-_ = cache.del("user1");
+_ = user_cache.del("user1");
 ```
 
 `get` will return `null` if the key is not found, or if the entry associated with the key has expired. If the entry has expired, it will be removed.

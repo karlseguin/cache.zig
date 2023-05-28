@@ -48,7 +48,7 @@ pub fn Segment(comptime T: type) type {
 			var it = self.lookup.iterator();
 			while (it.next()) |entry| {
 				allocator.free(entry.key_ptr.*);
-				entry.value_ptr.deinit(allocator);
+				deinitValue(allocator, entry.value_ptr.value);
 			}
 			self.lookup.deinit();
 		}
@@ -141,12 +141,7 @@ pub fn Segment(comptime T: type) type {
 
 			// we don't want to do either of these under our lock
 			if (existing_value) |existing| {
-				// This is ugly. It repeats the code in entry.deinit, but here we don't
-				// want to deinit the whole entry (it's being re-used for hte new value)
-				// we just want to deinit the underlying value.
-				if (comptime std.meta.trait.hasFn("deinit")(T)) {
-					return existing.deinit(allocator);
-				}
+				deinitValue(allocator, existing);
 			} else {
 				// list has its own lock
 				list.insert(gop.value_ptr);
@@ -167,11 +162,11 @@ pub fn Segment(comptime T: type) type {
 			while (size > target_size) {
 				const entry = list.removeTail() orelse break;
 				const k = entry.key;
+				size -= @intCast(i32, entry.size);
 				// TODO: it would be great if this didn't happen under lock!
 				// we should collect these in a batch of like 16, release the lock
 				// deinit, then go back to cleaning up
-				size -= @intCast(i32, entry.size);
-				entry.deinit(allocator);
+				deinitValue(allocator, entry.value);
 
 				const existed_in_lookup = lookup.remove(k);
 				std.debug.assert(existed_in_lookup == true);
@@ -191,16 +186,22 @@ pub fn Segment(comptime T: type) type {
 				return false;
 			};
 
-
 			var entry = map_entry.value;
 			self.size -= entry.size;
 			self.mutex.unlock();
 
 			allocator.free(map_entry.key);
 			self.list.remove(&entry);
-			entry.deinit(allocator);
+
+			deinitValue(allocator, entry.value);
 
 			return true;
+		}
+
+		fn deinitValue(allocator: Allocator, value: T) void {
+			if (comptime std.meta.trait.hasFn("deinit")(T)) {
+				return value.deinit(allocator);
+			}
 		}
 	};
 }

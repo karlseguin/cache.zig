@@ -25,12 +25,6 @@ pub fn Entry(comptime T: type) type {
 			};
 		}
 
-		pub fn deinit(self: *Self, allocator: Allocator) void {
-			if (comptime std.meta.trait.hasFn("deinit")(T)) {
-				return self.value.deinit(allocator);
-			}
-		}
-
 		pub fn expired(self: *Self) bool {
 			return self.ttl() <= 0;
 		}

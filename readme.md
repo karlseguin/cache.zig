@@ -30,9 +30,9 @@ In either case, the entry's `ttl() i64` method can be used to return the number 
 ## Implementation
 This is a typical LRU cache which combines a hashmap to lookup values and doubly linked list to track recency.
 
-To improve throughput, the cache is divided into a configured number of segments (defaults to 16). Locking only happens at the segment level. Furthermore, items are only promoted to the head of the recency linked list after a configured number of gets. This not only reduces the locking on the linked list, but also introduces a frequency bias to the eviction policy (which I think is welcome addition).
+To improve throughput, the cache is divided into a configured number of segments (defaults to 8). Locking only happens at the segment level. Furthermore, items are only promoted to the head of the recency linked list after a configured number of gets. This not only reduces the locking on the linked list, but also introduces a frequency bias to the eviction policy (which I think is welcome addition).
 
-The downside of this approach is that size enforcement and the eviction policy is done on a per-segment basis. Given a `max_size` of 8000 and a `segment_count` of 16, each segment will enforce its own `max_size` of 500 and maintain its own recency list. Should keys be poorly distributed across segments, the cache will only reach a fraction of its configured max size. Only lease-recently used items within a segment are considered for eviction.
+The downside of this approach is that size enforcement and the eviction policy is done on a per-segment basis. Given a `max_size` of 8000 and a `segment_count` of 8, each segment will enforce its own `max_size` of 1000 and maintain its own recency list. Should keys be poorly distributed across segments, the cache will only reach a fraction of its configured max size. Only lease-recently used items within a segment are considered for eviction.
 
 ## Configuration
 The 2nd argument to init is (including defaults):

@@ -1,8 +1,11 @@
-A thread-safe, expiration-aware ,LRU(ish) cache for Zig
+A thread-safe, expiration-aware, LRU(ish) cache for Zig
 
 
 ```zig
-var cache = cache.Cache(User).init(allocator, .{.max_size = 10000});
+// package available using Zig's built-in package manager
+const cache = @import("cache");
+
+var cache = try cache.Cache(User).init(allocator, .{.max_size = 10000});
 defer cache.deinit();
 
 try cache.put("user1", user1, .{.ttl = 300});

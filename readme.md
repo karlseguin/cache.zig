@@ -63,8 +63,6 @@ First, the key will be cloned and managed by the cache. The caller does not have
 
 `value` will be similarly managed by the cache. If `T` defines a method `deinit`, the cache will call `value.deinit(allocator: std.mem.Allocator)` whenever an item is removed from the cache (for whatever reason, including expiration, an explicit call to `cache.del`, or if the cache frees space when it is full). The `Allocator` passed to `deinit` is the `Allocator` that the cache was created with - this may or may not be an allocator that is meaningful to the value.
 
-**Important**: Currently, `value.deinit` can be called while a write-lock is held on the segment. 
-
 The third parameter is a `cache.PutConfig`. The 
 
 ```zig

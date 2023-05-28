@@ -6,6 +6,7 @@ const Allocator = std.mem.Allocator;
 pub fn Segment(comptime T: type) type {
 	const Entry = cache.Entry(T);
 	const List = @import("list.zig").List(T);
+	const DEINIT_VALUE = comptime std.meta.trait.hasFn("deinit")(T);
 
 	return struct {
 		// the current size.
@@ -157,24 +158,34 @@ pub fn Segment(comptime T: type) type {
 			// is under our target_size
 			const target_size = self.target_size;
 
+
+			var values_to_clear = std.ArrayList(T).init(allocator);
+			defer values_to_clear.deinit();
+
 			mutex.lock();
-			defer mutex.unlock();
+			// TODO: re-read size
 			while (size > target_size) {
 				const entry = list.removeTail() orelse break;
 				const k = entry.key;
 				size -= @intCast(i32, entry.size);
-				// TODO: it would be great if this didn't happen under lock!
-				// we should collect these in a batch of like 16, release the lock
-				// deinit, then go back to cleaning up
-				deinitValue(allocator, entry.value);
+
+				if (DEINIT_VALUE) {
+					try values_to_clear.append(entry.value);
+				}
 
 				const existed_in_lookup = lookup.remove(k);
 				std.debug.assert(existed_in_lookup == true);
 				allocator.free(k);
 			}
-
 			// we're still under lock
 			self.size = @intCast(u32, size);
+			mutex.unlock();
+
+			if (DEINIT_VALUE) {
+				for (values_to_clear.items) |value_to_clear| {
+					value_to_clear.deinit(allocator);
+				}
+			}
 		}
 
 		pub fn del(self: *Self, allocator: Allocator, key: []const u8) bool {
@@ -199,9 +210,10 @@ pub fn Segment(comptime T: type) type {
 		}
 
 		fn deinitValue(allocator: Allocator, value: T) void {
-			if (comptime std.meta.trait.hasFn("deinit")(T)) {
+			if (DEINIT_VALUE) {
 				return value.deinit(allocator);
 			}
 		}
+
 	};
 }

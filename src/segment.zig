@@ -87,7 +87,7 @@ pub fn Segment(comptime T: type) type {
 			return entry;
 		}
 
-		pub fn put(self: *Self, allocator: Allocator, key: []const u8, value: T, config: cache.PutConfig) !void {
+		pub fn put(self: *Self, allocator: Allocator, key: []const u8, value: T, config: cache.PutConfig) !*Entry {
 			var list = &self.list;
 			var lookup = &self.lookup;
 			const mutex = &self.mutex;
@@ -151,7 +151,7 @@ pub fn Segment(comptime T: type) type {
 
 			if (size <= self.max_size) {
 				// we're still under our max_size
-				return;
+				return gop.value_ptr;
 			}
 
 			// we need to free some space, we're going to free until our segment size
@@ -186,6 +186,19 @@ pub fn Segment(comptime T: type) type {
 					value_to_clear.deinit(allocator);
 				}
 			}
+
+			return gop.value_ptr;
+		}
+
+		// TOOD: singleflight
+		pub fn fetch(self: *Self, comptime S: type, allocator: Allocator, key: []const u8, loader: *const fn(key: []const u8, state: S) anyerror!?T, state: S, config: cache.PutConfig) !?*Entry {
+			if (self.get(allocator, key)) |v| {
+				return v;
+			}
+			if (try loader(key, state)) |value| {
+				return self.put(allocator, key, value, config);
+			}
+			return null;
 		}
 
 		pub fn del(self: *Self, allocator: Allocator, key: []const u8) bool {

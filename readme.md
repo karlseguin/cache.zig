@@ -75,3 +75,27 @@ The third parameter is a `cache.PutConfig`:
 `size` is the size of the value. This doesn't have to be the actual memory used by the value being cached. In many cases, the default of `1` is reasonable. However, if enforcement of the memory used by the cache is important, giving an approximate size (as memory usage or as a weighted value) will help. For example, if you're caching a string, the length of the string could make a reasonable argument for `size`. 
 
 `ttl` is the length, in second, to keep the value in the cache.
+
+## Fetch
+`cache.fetch` can be used to combine `get` and `put` by providing a custom function to load a missing value:
+
+```zig
+const user = try cache.fetch(FetchState, "user1", &loadUser, .{user_id: 1}, .{.ttl = 300});
+...
+
+const FetchState = struct {
+    user_id: u32,
+};
+
+fn loadUser(key: []const u8, state: FetchState) !?User {
+    const user_id = state.user_id
+    const user = ... // load a user from the DB?
+    return user;
+}
+```
+
+Because Zig doesn't have closures, and because your custom function will likely need data to load the missing value, you provide a custom `state` type and value which will be passed to your function. They cache key is also passed, which, in simple cases, might be all your function needs to load data (in such cases, a `void` state can be used).
+
+The last parameter to `fetch` is the same as the last parameter to `put`.
+
+Fetch [currently] does not do duplicate function call suppression (aka singleflight). Concurrent calls to `fetch` using the same key can result in multiple functions to your callback functions. In other words, fetch is vulnerable to the thundering herd problem.

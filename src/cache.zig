@@ -74,11 +74,15 @@ pub fn Cache(comptime T: type) type {
 		}
 
 		pub fn put(self: *Self, key: []const u8, value: T, config: PutConfig) !void {
-			return self.getSegment(key).put(self.allocator, key, value, config);
+			_ = try self.getSegment(key).put(self.allocator, key, value, config);
 		}
 
 		pub fn del(self: *Self, key: []const u8) bool {
 			return self.getSegment(key).del(self.allocator, key);
+		}
+
+		pub fn fetch(self: *Self, comptime S: type, key: []const u8, loader: *const fn(key: []const u8, state: S) anyerror!?T, state: S, config: PutConfig) !?*Entry(T) {
+			return self.getSegment(key).fetch(S, self.allocator, key, loader, state, config);
 		}
 
 		fn getSegment(self: *const Self, key: []const u8) *Segment(T) {
@@ -207,7 +211,7 @@ test "cache: get promotion" {
 	try testSingleSegmentCache(cache, &[_][]const u8{"k2", "k1", "k3"});
 }
 
-test "cache: get promotion expird" {
+test "cache: get promotion expired" {
 	var cache = try Cache(i32).init(t.allocator, .{.segment_count = 1, .gets_per_promote = 3});
 	defer cache.deinit();
 
@@ -229,6 +233,35 @@ test "cache: get promotion expird" {
 	_ = cache.getEntry("k3");
 	_ = cache.getEntry("k3");
 	try testSingleSegmentCache(cache, &[_][]const u8{"k2", "k1", "k3"});
+}
+
+test "cache: fetch" {
+	var cache = t.initCache();
+	defer cache.deinit();
+
+	var fetch_state = FetchState{.called = 0};
+	try t.expectString("k1", (try cache.fetch(*FetchState, "k1", &doFetch, &fetch_state, .{})).?.key);
+	try t.expectEqual(@as(i32, 1), fetch_state.called);
+
+	// same key, fetch_state.called doesn't increment because doFetch isn't called!
+	try t.expectString("k1", (try cache.fetch(*FetchState, "k1", &doFetch, &fetch_state, .{})).?.key);
+	try t.expectEqual(@as(i32, 1), fetch_state.called);
+
+	// different key
+	try t.expectString("k2", (try cache.fetch(*FetchState, "k2", &doFetch, &fetch_state, .{})).?.key);
+	try t.expectEqual(@as(i32, 2), fetch_state.called);
+
+	// this key makes doFetch return null
+	try t.expectEqual(@as(?*t.Entry, null), try cache.fetch(*FetchState, "return null", &doFetch, &fetch_state, .{}));
+	try t.expectEqual(@as(i32, 3), fetch_state.called);
+
+	// we don't cache null, so this will hit doFetch again
+	try t.expectEqual(@as(?*t.Entry, null), try cache.fetch(*FetchState, "return null", &doFetch, &fetch_state, .{}));
+	try t.expectEqual(@as(i32, 4), fetch_state.called);
+
+	// this will return an error
+	try t.expectError(error.FetchFail, cache.fetch(*FetchState, "return error", &doFetch, &fetch_state, .{}));
+	try t.expectEqual(@as(i32, 5), fetch_state.called);
 }
 
 test "cache: max_size" {
@@ -298,3 +331,18 @@ const DeinitValue = struct {
 		allocator.free(self.data);
 	}
 };
+
+const FetchState = struct {
+	called: i32,
+};
+
+fn doFetch(key: []const u8, state: *FetchState) !?i32 {
+	state.called += 1;
+	if (std.mem.eql(u8, key, "return null")) {
+		return null;
+	}
+	if (state.called == 5) {
+		return error.FetchFail;
+	}
+	return state.called;
+}

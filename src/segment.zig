@@ -6,7 +6,8 @@ const Allocator = std.mem.Allocator;
 pub fn Segment(comptime T: type) type {
 	const Entry = cache.Entry(T);
 	const List = @import("list.zig").List(T);
-	const DEINIT_VALUE = comptime std.meta.trait.hasFn("deinit")(T);
+	const NOTIFY_REMOVAL = comptime std.meta.trait.hasFn("removedFromCache")(T);
+	const NOTIFY_BATCH = if (NOTIFY_REMOVAL) [16]T else [0]T;
 
 	return struct {
 		// the current size.
@@ -49,7 +50,7 @@ pub fn Segment(comptime T: type) type {
 			var it = self.lookup.iterator();
 			while (it.next()) |entry| {
 				allocator.free(entry.key_ptr.*);
-				deinitValue(allocator, entry.value_ptr.value);
+				notifyRemoval(allocator, entry.value_ptr.value);
 			}
 			self.lookup.deinit();
 		}
@@ -142,7 +143,7 @@ pub fn Segment(comptime T: type) type {
 
 			// we don't want to do either of these under our lock
 			if (existing_value) |existing| {
-				deinitValue(allocator, existing);
+				notifyRemoval(allocator, existing);
 			} else {
 				// list has its own lock
 				list.insert(gop.value_ptr);
@@ -159,31 +160,49 @@ pub fn Segment(comptime T: type) type {
 			const target_size = self.target_size;
 
 
-			var values_to_clear = std.ArrayList(T).init(allocator);
-			defer values_to_clear.deinit();
+			var values_removed: NOTIFY_BATCH = undefined;
+			var removed_count: usize = 0;
 
 			mutex.lock();
-			// TODO: re-read size
-			while (size > target_size) {
+			// recheck
+			var cache_size = self.size;
+			while (cache_size > target_size) {
 				const entry = list.removeTail() orelse break;
 				const k = entry.key;
-				size -= @intCast(i32, entry.size);
+				cache_size -= entry.size;
 
-				if (DEINIT_VALUE) {
-					try values_to_clear.append(entry.value);
+				if (NOTIFY_REMOVAL) {
+					values_removed[removed_count] = entry.value;
+					removed_count += 1;
 				}
 
 				const existed_in_lookup = lookup.remove(k);
 				std.debug.assert(existed_in_lookup == true);
 				allocator.free(k);
+
+				// I think this (unlocking and relocking) is safe. I really hate the idea
+				// of removedFromCache being called under lock (we have no control over
+				// what it does).
+				if (NOTIFY_REMOVAL and removed_count == values_removed.len) {
+					mutex.unlock();
+					for (values_removed) |vr| {
+						vr.removedFromCache(allocator);
+					}
+					removed_count = 0;
+					mutex.lock();
+
+					// This is why I think we're being safe. Under lock, we re-acquire
+					// the cache size in case another thread has done some cleanup
+					cache_size = self.size;
+				}
 			}
 			// we're still under lock
-			self.size = @intCast(u32, size);
+			self.size = cache_size;
 			mutex.unlock();
 
-			if (DEINIT_VALUE) {
-				for (values_to_clear.items) |value_to_clear| {
-					value_to_clear.deinit(allocator);
+			if (NOTIFY_REMOVAL and removed_count > 0) {
+				for (values_removed[0..removed_count]) |vr| {
+					vr.removedFromCache(allocator);
 				}
 			}
 
@@ -217,14 +236,14 @@ pub fn Segment(comptime T: type) type {
 			allocator.free(map_entry.key);
 			self.list.remove(&entry);
 
-			deinitValue(allocator, entry.value);
+			notifyRemoval(allocator, entry.value);
 
 			return true;
 		}
 
-		fn deinitValue(allocator: Allocator, value: T) void {
-			if (DEINIT_VALUE) {
-				return value.deinit(allocator);
+		fn notifyRemoval(allocator: Allocator, value: T) void {
+			if (NOTIFY_REMOVAL) {
+				value.removedFromCache(allocator);
 			}
 		}
 

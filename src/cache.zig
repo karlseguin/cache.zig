@@ -327,7 +327,7 @@ const DeinitValue = struct {
 		return .{.data = t.allocator.dupe(u8, data) catch unreachable};
 	}
 
-	pub fn deinit(self: DeinitValue, allocator: Allocator) void {
+	pub fn removedFromCache(self: DeinitValue, allocator: Allocator) void {
 		allocator.free(self.data);
 	}
 };

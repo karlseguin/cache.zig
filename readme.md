@@ -61,7 +61,9 @@ The `cache.put(key: []const u8, value: T, config: cache.PutConfig) !void` has a 
 
 First, the key will be cloned and managed by the cache. The caller does not have to guarantee its validity after `put` returns.
 
-`value` will be similarly managed by the cache. If `T` defines a method `deinit`, the cache will call `value.deinit(allocator: std.mem.Allocator)` whenever an item is removed from the cache (for whatever reason, including expiration, an explicit call to `cache.del`, or if the cache frees space when it is full). The `Allocator` passed to `deinit` is the `Allocator` that the cache was created with - this may or may not be an allocator that is meaningful to the value.
+`value` will be similarly managed by the cache. If `T` defines the method `removedFromCache`, the cache will call `value.removedFromCache(allocator: std.mem.Allocator)` whenever an entry is removed from the cache (for whatever reason, including expiration, an explicit call to `cache.del`, or if the cache frees space when it is full). The `Allocator` passed to `deinit` is the `Allocator` that the cache was created with - this may or may not be an allocator that is meaningful to the value.
+
+The cache makes no guarantee, and has no way to ensure, `removedFromCache` won't be immediately called after a `get` returns the entry (either from the same or a different thread).
 
 The third parameter is a `cache.PutConfig`: 
 

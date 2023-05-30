@@ -14,20 +14,3 @@ pub const Entry = cache.Entry(i32);
 pub fn initCache() cache.Cache(i32) {
 	return cache.Cache(i32).init(allocator, .{.segment_count = 2}) catch unreachable;
 }
-
-pub fn testList(list: List(i32), expected: []const []const u8) !void {
-	var node = list.head;
-	for (expected) |e| {
-		try expectString(e, node.?.key);
-		node = node.?.next;
-	}
-	try expectEqual(@as(?*Entry, null), node);
-
-	node = list.tail;
-	var i: usize = expected.len;
-	while (i > 0) : (i -= 1) {
-		try expectString(expected[i-1], node.?.key);
-		node = node.?.prev;
-	}
-	try expectEqual(@as(?*Entry, null), node);
-}

@@ -5,9 +5,7 @@ const Allocator = std.mem.Allocator;
 
 pub fn Segment(comptime T: type) type {
 	const Entry = cache.Entry(T);
-	const List = @import("list.zig").List(T);
-	const NOTIFY_REMOVAL = comptime std.meta.trait.hasFn("removedFromCache")(T);
-	const NOTIFY_BATCH = if (NOTIFY_REMOVAL) [16]T else [0]T;
+	const List = @import("list.zig").List(*Entry);
 
 	return struct {
 		// the current size.
@@ -22,6 +20,10 @@ pub fn Segment(comptime T: type) type {
 		// items only get promoted on every N gets.
 		gets_per_promote: u8,
 
+		// whether or not to protect removal of entries which are "lent" to the
+		// application
+		protected_removal: bool,
+
 		// a double linked list with most recently used items at the head
 		// has its own internal mutex for thread-safety.
 		list: List,
@@ -30,7 +32,7 @@ pub fn Segment(comptime T: type) type {
 		mutex: std.Thread.RwLock,
 
 		// key => entry
-		lookup: std.StringHashMap(Entry),
+		lookup: std.StringHashMap(*Entry),
 
 		const Self = @This();
 
@@ -41,16 +43,19 @@ pub fn Segment(comptime T: type) type {
 				.max_size = config.max_size,
 				.target_size = config.target_size,
 				.gets_per_promote = config.gets_per_promote,
+				.protected_removal = config.protected_removal,
 				.list = List.init(),
-				.lookup = std.StringHashMap(Entry).init(allocator),
+				.lookup = std.StringHashMap(*Entry).init(allocator),
 			};
 		}
 
-		pub fn deinit(self: *Self, allocator: Allocator) void {
+		pub fn deinit(self: *Self) void {
+			var list = &self.list;
 			var it = self.lookup.iterator();
-			while (it.next()) |entry| {
-				allocator.free(entry.key_ptr.*);
-				notifyRemoval(allocator, entry.value_ptr.value);
+			while (it.next()) |kv| {
+				const entry = kv.value_ptr.*;
+				list.remove(entry._node);
+				entry.release();
 			}
 			self.lookup.deinit();
 		}
@@ -61,10 +66,19 @@ pub fn Segment(comptime T: type) type {
 			return self.lookup.contains(key);
 		}
 
-		pub fn get(self: *Self, allocator: Allocator, key: []const u8) ?*Entry {
+		pub fn get(self: *Self, key: []const u8) ?*Entry {
 			const entry = self.getEntry(key) orelse return null;
 			if (entry.expired()) {
-				_ = self.del(allocator, key);
+				// release getEntry's borrow
+				entry.release();
+
+				self.mutex.lock();
+				_ = self.lookup.remove(key);
+				self.size -= entry._size;
+				self.mutex.unlock();
+				self.list.remove(entry._node);
+				// and now release the cache's implicit borrow
+				entry.release();
 				return null;
 			}
 			return entry;
@@ -72,180 +86,121 @@ pub fn Segment(comptime T: type) type {
 
 		pub fn getEntry(self: *Self, key: []const u8) ?*Entry {
 			self.mutex.lockShared();
-			const optional_entry = self.lookup.getPtr(key);
+			const optional_entry = self.lookup.get(key);
+			const entry = optional_entry orelse {
+				self.mutex.unlockShared();
+				return null;
+			};
+			// Even though entry.borrow() increments entry._gc atomically, it has to
+			// be called under the mutex. If we move the call to entry.borrow() after
+			// releating the mutex, a del or put could slip in, see that _gc == 0
+			// and call removedFromCache.
+			// (And, we want _gc incremented atomically, because this is a shared
+			// read lock and multiple threads could be accessing the entry concurrently)
+			entry.borrow();
 			self.mutex.unlockShared();
 
-			const entry = optional_entry orelse return null;
-			if (entry.expired()) {
-				self.list.moveToTail(entry);
-				return entry;
-			}
-
-			if (@rem(entry.hit(), self.gets_per_promote) == 0) {
-				self.list.moveToFront(entry);
+			if (!entry.expired() and @rem(entry.hit(), self.gets_per_promote) == 0) {
+				self.list.moveToFront(entry._node);
 			}
 
 			return entry;
 		}
 
 		pub fn put(self: *Self, allocator: Allocator, key: []const u8, value: T, config: cache.PutConfig) !*Entry {
+			const entry_size = config.size;
+			const expires = @intCast(u32, std.time.timestamp()) + config.ttl;
+
+			const owned_key = try allocator.dupe(u8, key);
+			const entry = try allocator.create(Entry);
+			const node = try allocator.create(List.Node);
+			node.* = List.Node{.value = entry};
+			entry.* = Entry.init(allocator, owned_key, value, entry_size, expires);
+			entry._node = node;
+
 			var list = &self.list;
 			var lookup = &self.lookup;
 			const mutex = &self.mutex;
-
-			const entry_size = config.size;
-			var size_to_add: i32 = @intCast(i32, entry_size);
-
-			var existing_value: ?T = null;
-			const expires = @intCast(u32, std.time.timestamp()) + config.ttl;
+			var existing_entry: ?*Entry = null;
 
 			mutex.lock();
+			var segment_size = self.size;
 			const gop = try lookup.getOrPut(key);
 			if (gop.found_existing) {
-				// An entry with this key already exists. We want to re-use the Entry(T)
-				// as much as possible (because it's already in our List(T) and HashMap
-				// at the right place
-
-				const existing = gop.value_ptr;
-
-				// We want to keep the Entry, but we'll need to call deinit on the value
-				// (if it implements deinit). We don't want to do that under lock, so
-				// just grap a copy of it here.
-				existing_value = existing.value;
-
-				// The amount of space that we're going to use up is going to be the
-				// difference between the old and new. This could be negative
-				// if the new is smaller than the old, 0 if they're the same size, or
-				// positive if the new is larger than the old.
-				size_to_add = size_to_add - @intCast(i32, existing.size);
-
-				// Overwrite the existing entry's size, value and expires with the new ones
-				// keep everything else (e.g. the next/prev linked list pointer, and the
-				// key, the sames)
-				existing.size = entry_size;
-				existing.value = value;
-				existing.expires = expires;
-
-			} else {
-				// This key is new, shame to do this under lock!
-				const owned_key = try allocator.dupe(u8, key);
-				gop.key_ptr.* = owned_key;
-				var entry = Entry.init(owned_key, value);
-				entry.expires = expires;
-				entry.size = entry_size;
+				existing_entry = gop.value_ptr.*;
 				gop.value_ptr.* = entry;
+				gop.key_ptr.* = owned_key; // aka, entry.key
+				segment_size = segment_size - existing_entry.?._size + entry_size;
+			} else {
+				gop.key_ptr.* = owned_key;
+				gop.value_ptr.* = entry;
+				segment_size = segment_size + entry_size;
 			}
-
-			var size = @intCast(i32, self.size) + size_to_add;
-			self.size = @intCast(u32, size);
+			self.size = segment_size;
 			mutex.unlock();
 
-
-			// we don't want to do either of these under our lock
-			if (existing_value) |existing| {
-				notifyRemoval(allocator, existing);
-			} else {
-				// list has its own lock
-				list.insert(gop.value_ptr);
+			if (existing_entry) |existing| {
+				list.remove(existing._node);
+				existing.release();
 			}
+			list.insert(entry._node);
 
-
-			if (size <= self.max_size) {
+			if (segment_size <= self.max_size) {
 				// we're still under our max_size
-				return gop.value_ptr;
+				return entry;
 			}
 
 			// we need to free some space, we're going to free until our segment size
 			// is under our target_size
 			const target_size = self.target_size;
 
-
-			var values_removed: NOTIFY_BATCH = undefined;
-			var removed_count: usize = 0;
-
 			mutex.lock();
 			// recheck
-			var cache_size = self.size;
-			while (cache_size > target_size) {
-				const entry = list.removeTail() orelse break;
-				const k = entry.key;
-				cache_size -= entry.size;
+			segment_size = self.size;
+			while (segment_size > target_size) {
+				const removed_node = list.removeTail() orelse break;
+				const removed_entry = removed_node.value;
 
-				if (NOTIFY_REMOVAL) {
-					values_removed[removed_count] = entry.value;
-					removed_count += 1;
-				}
-
-				const existed_in_lookup = lookup.remove(k);
+				const existed_in_lookup = lookup.remove(removed_entry.key);
 				std.debug.assert(existed_in_lookup == true);
-				allocator.free(k);
 
-				// I think this (unlocking and relocking) is safe. I really hate the idea
-				// of removedFromCache being called under lock (we have no control over
-				// what it does).
-				if (NOTIFY_REMOVAL and removed_count == values_removed.len) {
-					mutex.unlock();
-					for (values_removed) |vr| {
-						vr.removedFromCache(allocator);
-					}
-					removed_count = 0;
-					mutex.lock();
-
-					// This is why I think we're being safe. Under lock, we re-acquire
-					// the cache size in case another thread has done some cleanup
-					cache_size = self.size;
-				}
+				segment_size -= removed_entry._size;
+				removed_entry.release();
 			}
 			// we're still under lock
-			self.size = cache_size;
+			self.size = segment_size;
 			mutex.unlock();
 
-			if (NOTIFY_REMOVAL and removed_count > 0) {
-				for (values_removed[0..removed_count]) |vr| {
-					vr.removedFromCache(allocator);
-				}
-			}
-
-			return gop.value_ptr;
+			return entry;
 		}
 
 		// TOOD: singleflight
 		pub fn fetch(self: *Self, comptime S: type, allocator: Allocator, key: []const u8, loader: *const fn(key: []const u8, state: S) anyerror!?T, state: S, config: cache.PutConfig) !?*Entry {
-			if (self.get(allocator, key)) |v| {
+			if (self.get(key)) |v| {
 				return v;
 			}
 			if (try loader(key, state)) |value| {
-				return self.put(allocator, key, value, config);
+				const entry = try self.put(allocator, key, value, config);
+				entry.borrow();
+				return entry;
 			}
 			return null;
 		}
 
-		pub fn del(self: *Self, allocator: Allocator, key: []const u8) bool {
+		pub fn del(self: *Self, key: []const u8) bool {
 			self.mutex.lock();
-			var existing = self.lookup.fetchRemove(key);
-
+			const existing = self.lookup.fetchRemove(key);
 			const map_entry = existing orelse {
 				self.mutex.unlock();
 				return false;
 			};
-
-			var entry = map_entry.value;
-			self.size -= entry.size;
+			const entry = map_entry.value;
+			self.size -= entry._size;
 			self.mutex.unlock();
 
-			allocator.free(map_entry.key);
-			self.list.remove(&entry);
-
-			notifyRemoval(allocator, entry.value);
-
+			self.list.remove(entry._node);
+			entry.release();
 			return true;
 		}
-
-		fn notifyRemoval(allocator: Allocator, value: T) void {
-			if (NOTIFY_REMOVAL) {
-				value.removedFromCache(allocator);
-			}
-		}
-
 	};
 }

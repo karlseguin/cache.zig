@@ -202,5 +202,45 @@ pub fn Segment(comptime T: type) type {
 			entry.release();
 			return true;
 		}
+
+		// This is an expensive call (even more so since we know this is being called
+		// on each segment). We optimize what we can, by first collecting the matching
+		// entries under a shared lock. This is nice since the expensive prefix match
+		// won'ts block concurrent gets.
+		pub fn delPrefix(self: *Self, allocator: Allocator, prefix: []const u8) !usize {
+			var matching = std.ArrayList(*Entry).init(allocator);
+			defer matching.deinit();
+
+			self.mutex.lockShared();
+			var it = self.lookup.iterator();
+			while (it.next()) |map_entry| {
+				if (std.mem.startsWith(u8, map_entry.key_ptr.*, prefix)) {
+					try matching.append(map_entry.value_ptr.*);
+				}
+			}
+			self.mutex.unlockShared();
+
+			const entries = matching.items;
+			if (entries.len == 0) {
+				return 0;
+			}
+
+			var lookup = &self.lookup;
+			self.mutex.lock();
+			for (entries) |entry| {
+				self.size -= entry._size;
+				_ = lookup.remove(entry.key);
+			}
+			self.mutex.unlock();
+
+			// list and entry have their own thread safety
+			var list = &self.list;
+			for (entries) |entry| {
+				list.remove(entry._node);
+				entry.release();
+			}
+
+			return entries.len;
+		}
 	};
 }

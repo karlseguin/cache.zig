@@ -110,3 +110,7 @@ This is why `release` must be called on the entry returned by `get` and `getEntr
 If `T` defines the method `removedFromCache`, `T.removedFromCache(Allocator)` will be called when all references are to entry are removed but before the entry is destroyed. `removedFromCache` will be called regardless of why the entry was removed.
 
 The `Allocator` passed to `removedFromCache` is the `Allocator` that the cache was created with - this may or may not be an allocator that is meaningful to the value.
+
+
+## delPrefix
+`cache.delPrefix` can be used to delete any entry that starts with the specified prefix. This requires an O(N) scan through the cache. However, some optimizations are done to limit the amount of write-lock this places on the cache.

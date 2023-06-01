@@ -83,6 +83,15 @@ pub fn Cache(comptime T: type) type {
 			return self.getSegment(key).del(key);
 		}
 
+		pub fn delPrefix(self: *Self, prefix: []const u8) !usize {
+			var total: usize = 0;
+			const allocator = self.allocator;
+			for (self.segments) |*segment| {
+				total += try segment.delPrefix(allocator, prefix);
+			}
+			return total;
+		}
+
 		pub fn fetch(self: *Self, comptime S: type, key: []const u8, loader: *const fn(key: []const u8, state: S) anyerror!?T, state: S, config: PutConfig) !?*Entry(T) {
 			return self.getSegment(key).fetch(S, self.allocator, key, loader, state, config);
 		}
@@ -295,6 +304,38 @@ test "cache: max_size" {
 
 	try cache.put("k8", 8, .{.size = 3});
 	try testSingleSegmentCache(&cache, &[_][]const u8{"k8", "k6"}, &.{8, 6}, false);
+}
+
+test "cache: delPrefix" {
+	var cache = try Cache(i32).init(t.allocator, .{.max_size = 10});
+	defer cache.deinit();
+
+	try cache.put("a1", 1, .{});
+	try cache.put("bb2", 2, .{});
+	try cache.put("bc3", 3, .{});
+	try cache.put("a4", 4, .{});
+	try cache.put("a5", 5, .{});
+
+	try t.expectEqual(@as(usize, 0), try cache.delPrefix("z"));
+	try t.expectEqual(true, cache.contains("bb2"));
+	try t.expectEqual(true, cache.contains("bc3"));
+	try t.expectEqual(true, cache.contains("a1"));
+	try t.expectEqual(true, cache.contains("a1"));
+	try t.expectEqual(true, cache.contains("a5"));
+
+	try t.expectEqual(@as(usize, 3), try cache.delPrefix("a"));
+	try t.expectEqual(true, cache.contains("bb2"));
+	try t.expectEqual(true, cache.contains("bc3"));
+	try t.expectEqual(false, cache.contains("a1"));
+	try t.expectEqual(false, cache.contains("a1"));
+	try t.expectEqual(false, cache.contains("a5"));
+
+	try t.expectEqual(@as(usize, 1), try cache.delPrefix("bb"));
+	try t.expectEqual(false, cache.contains("bb2"));
+	try t.expectEqual(true, cache.contains("bc3"));
+	try t.expectEqual(false, cache.contains("a1"));
+	try t.expectEqual(false, cache.contains("a1"));
+	try t.expectEqual(false, cache.contains("a5"));
 }
 
 // if NotifiedValue.deinit isn't called, we expect a memory leak to be detected

@@ -99,7 +99,7 @@ Because Zig doesn't have closures, and because your custom function will likely 
 
 The last parameter to `fetch` is the same as the last parameter to `put`.
 
-Fetch [currently] does not do duplicate function call suppression (aka singleflight). Concurrent calls to `fetch` using the same key can result in multiple functions to your callback functions. In other words, fetch is vulnerable to the thundering herd problem.
+Fetch  does not do duplicate function call suppression. Concurrent calls to `fetch` using the same key can result in multiple functions to your callback functions. In other words, fetch is vulnerable to the thundering herd problem. Considering using [singleflight.zig](https://github.com/karlseguin/singleflight.zig) within your fetch callback.
 
 ## Entry Thread Safety
 It's possible for one thread to `get` an entry, while another thread deletes it. This deletion could be explicit (a call to `cache.del` or replacing a value with `cache.put`) or implicit (a call to `cache.put` causing the cache to free memory). To ensure that deleted entries can safely be used by the application, atomic reference counting is used. While a deleted entry is immediately removed from the cache, it remains valid until all references are removed.

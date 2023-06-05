@@ -96,6 +96,10 @@ pub fn Cache(comptime T: type) type {
 			return self.getSegment(key).fetch(S, self.allocator, key, loader, state, config);
 		}
 
+		pub fn maxSize(self: Self) usize {
+			return self.segments[0].max_size * self.segments.len;
+		}
+
 		fn getSegment(self: *const Self, key: []const u8) *Segment(T) {
 			const hash_code = std.hash.Wyhash.hash(0, key);
 			return &self.segments[hash_code & self.segment_mask];
@@ -282,7 +286,7 @@ test "cache: fetch" {
 	try t.expectEqual(@as(i32, 5), fetch_state.called);
 }
 
-test "cache: max_size" {
+test "cache: enforce max_size" {
 	var cache = try Cache(i32).init(t.allocator, .{.max_size = 5, .segment_count = 1});
 	defer cache.deinit();
 
@@ -304,6 +308,13 @@ test "cache: max_size" {
 
 	try cache.put("k8", 8, .{.size = 3});
 	try testSingleSegmentCache(&cache, &[_][]const u8{"k8", "k6"}, &.{8, 6}, false);
+}
+
+test "cache: get max_size" {
+	var cache = try Cache(i32).init(t.allocator, .{.max_size = 1100, .segment_count = 8});
+	defer cache.deinit();
+
+	try t.expectEqual(@as(usize, 1096), cache.maxSize());
 }
 
 test "cache: delPrefix" {

@@ -175,11 +175,11 @@ pub fn Segment(comptime T: type) type {
 		}
 
 		// TOOD: singleflight
-		pub fn fetch(self: *Self, comptime S: type, allocator: Allocator, key: []const u8, loader: *const fn(key: []const u8, state: S) anyerror!?T, state: S, config: cache.PutConfig) !?*Entry {
+		pub fn fetch(self: *Self, comptime S: type, allocator: Allocator, key: []const u8, loader: *const fn(state: S, key: []const u8) anyerror!?T, state: S, config: cache.PutConfig) !?*Entry {
 			if (self.get(key)) |v| {
 				return v;
 			}
-			if (try loader(key, state)) |value| {
+			if (try loader(state, key)) |value| {
 				const entry = try self.put(allocator, key, value, config);
 				entry.borrow();
 				return entry;

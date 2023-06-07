@@ -92,7 +92,7 @@ pub fn Cache(comptime T: type) type {
 			return total;
 		}
 
-		pub fn fetch(self: *Self, comptime S: type, key: []const u8, loader: *const fn(key: []const u8, state: S) anyerror!?T, state: S, config: PutConfig) !?*Entry(T) {
+		pub fn fetch(self: *Self, comptime S: type, key: []const u8, loader: *const fn(state: S, key: []const u8) anyerror!?T, state: S, config: PutConfig) !?*Entry(T) {
 			return self.getSegment(key).fetch(S, self.allocator, key, loader, state, config);
 		}
 
@@ -256,33 +256,33 @@ test "cache: fetch" {
 	defer cache.deinit();
 
 	var fetch_state = FetchState{.called = 0};
-	const e1a = (try cache.fetch(*FetchState, "k1", &doFetch, &fetch_state, .{})).?;
+	const e1a = (try cache.fetch(*FetchState, "k1", doFetch, &fetch_state, .{})).?;
 	defer e1a.release();
 	try t.expectString("k1", e1a.key);
 	try t.expectEqual(@as(i32, 1), fetch_state.called);
 
 	// same key, fetch_state.called doesn't increment because doFetch isn't called!
-	const e1b = (try cache.fetch(*FetchState, "k1", &doFetch, &fetch_state, .{})).?;
+	const e1b = (try cache.fetch(*FetchState, "k1", doFetch, &fetch_state, .{})).?;
 	defer e1b.release();
 	try t.expectString("k1", e1b.key);
 	try t.expectEqual(@as(i32, 1), fetch_state.called);
 
 	// different key
-	const e2 = (try cache.fetch(*FetchState, "k2", &doFetch, &fetch_state, .{})).?;
+	const e2 = (try cache.fetch(*FetchState, "k2", doFetch, &fetch_state, .{})).?;
 	defer e2.release();
 	try t.expectString("k2", e2.key);
 	try t.expectEqual(@as(i32, 2), fetch_state.called);
 
 	// this key makes doFetch return null
-	try t.expectEqual(@as(?*t.Entry, null), try cache.fetch(*FetchState, "return null", &doFetch, &fetch_state, .{}));
+	try t.expectEqual(@as(?*t.Entry, null), try cache.fetch(*FetchState, "return null", doFetch, &fetch_state, .{}));
 	try t.expectEqual(@as(i32, 3), fetch_state.called);
 
 	// we don't cache null, so this will hit doFetch again
-	try t.expectEqual(@as(?*t.Entry, null), try cache.fetch(*FetchState, "return null", &doFetch, &fetch_state, .{}));
+	try t.expectEqual(@as(?*t.Entry, null), try cache.fetch(*FetchState, "return null", doFetch, &fetch_state, .{}));
 	try t.expectEqual(@as(i32, 4), fetch_state.called);
 
 	// this will return an error
-	try t.expectError(error.FetchFail, cache.fetch(*FetchState, "return error", &doFetch, &fetch_state, .{}));
+	try t.expectError(error.FetchFail, cache.fetch(*FetchState, "return error", doFetch, &fetch_state, .{}));
 	try t.expectEqual(@as(i32, 5), fetch_state.called);
 }
 
@@ -405,7 +405,7 @@ const FetchState = struct {
 	called: i32,
 };
 
-fn doFetch(key: []const u8, state: *FetchState) !?i32 {
+fn doFetch(state: *FetchState, key: []const u8) !?i32 {
 	state.called += 1;
 	if (std.mem.eql(u8, key, "return null")) {
 		return null;

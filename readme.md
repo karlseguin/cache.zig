@@ -81,14 +81,14 @@ The third parameter is a `cache.PutConfig`:
 `cache.fetch` can be used to combine `get` and `put` by providing a custom function to load a missing value:
 
 ```zig
-const user = try cache.fetch(FetchState, "user1", &loadUser, .{user_id: 1}, .{.ttl = 300});
+const user = try cache.fetch(FetchState, "user1", loadUser, .{user_id: 1}, .{.ttl = 300});
 ...
 
 const FetchState = struct {
     user_id: u32,
 };
 
-fn loadUser(key: []const u8, state: FetchState) !?User {
+fn loadUser(state: FetchState, key: []const u8) !?User {
     const user_id = state.user_id
     const user = ... // load a user from the DB?
     return user;

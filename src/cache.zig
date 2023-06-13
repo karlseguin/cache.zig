@@ -318,7 +318,7 @@ test "cache: get max_size" {
 }
 
 test "cache: delPrefix" {
-	var cache = try Cache(i32).init(t.allocator, .{.max_size = 10});
+	var cache = try Cache(i32).init(t.allocator, .{.max_size = 100});
 	defer cache.deinit();
 
 	try cache.put("a1", 1, .{});
@@ -331,21 +331,21 @@ test "cache: delPrefix" {
 	try t.expectEqual(true, cache.contains("bb2"));
 	try t.expectEqual(true, cache.contains("bc3"));
 	try t.expectEqual(true, cache.contains("a1"));
-	try t.expectEqual(true, cache.contains("a1"));
+	try t.expectEqual(true, cache.contains("a4"));
 	try t.expectEqual(true, cache.contains("a5"));
 
 	try t.expectEqual(@as(usize, 3), try cache.delPrefix("a"));
 	try t.expectEqual(true, cache.contains("bb2"));
 	try t.expectEqual(true, cache.contains("bc3"));
 	try t.expectEqual(false, cache.contains("a1"));
-	try t.expectEqual(false, cache.contains("a1"));
+	try t.expectEqual(false, cache.contains("a4"));
 	try t.expectEqual(false, cache.contains("a5"));
 
 	try t.expectEqual(@as(usize, 1), try cache.delPrefix("bb"));
 	try t.expectEqual(false, cache.contains("bb2"));
 	try t.expectEqual(true, cache.contains("bc3"));
 	try t.expectEqual(false, cache.contains("a1"));
-	try t.expectEqual(false, cache.contains("a1"));
+	try t.expectEqual(false, cache.contains("a4"));
 	try t.expectEqual(false, cache.contains("a5"));
 }
 

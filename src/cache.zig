@@ -310,6 +310,24 @@ test "cache: enforce max_size" {
 	try testSingleSegmentCache(&cache, &[_][]const u8{"k8", "k6"}, &.{8, 6}, false);
 }
 
+test "cache: enforce sized() " {
+	var cache = try Cache(TestSized).init(t.allocator, .{.max_size = 12, .segment_count = 1});
+	defer cache.deinit();
+
+	try cache.put("k1", .{.id = 1, .s = 1}, .{});
+	try cache.put("k2", .{.id = 2, .s = 2}, .{});
+	try cache.put("k3", .{.id = 3, .s = 3}, .{});
+	try t.expectEqual(true, cache.contains("k1"));
+	try t.expectEqual(true, cache.contains("k2"));
+	try t.expectEqual(true, cache.contains("k3"));
+
+	try cache.put("k4", .{.id = 4, .s = 7}, .{});
+	try t.expectEqual(false, cache.contains("k1"));
+	try t.expectEqual(false, cache.contains("k2"));
+	try t.expectEqual(true, cache.contains("k3"));
+	try t.expectEqual(true, cache.contains("k4"));
+}
+
 test "cache: get max_size" {
 	var cache = try Cache(i32).init(t.allocator, .{.max_size = 1100, .segment_count = 8});
 	defer cache.deinit();
@@ -433,3 +451,12 @@ fn testList(list: List(*Entry(i32)), expected: []const i32) !void {
 	}
 	try t.expectEqual(true, node == null);
 }
+
+const TestSized = struct {
+	id: u32,
+	s: u32,
+
+	pub fn size(self: TestSized) u32 {
+		return self.s;
+	}
+};

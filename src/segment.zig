@@ -6,6 +6,7 @@ const Allocator = std.mem.Allocator;
 pub fn Segment(comptime T: type) type {
 	const Entry = cache.Entry(T);
 	const List = @import("list.zig").List(*Entry);
+	const IS_SIZED = comptime std.meta.trait.hasFn("size")(T);
 
 	return struct {
 		// the current size.
@@ -108,7 +109,7 @@ pub fn Segment(comptime T: type) type {
 		}
 
 		pub fn put(self: *Self, allocator: Allocator, key: []const u8, value: T, config: cache.PutConfig) !*Entry {
-			const entry_size = config.size;
+			const entry_size = if (IS_SIZED) T.size(value) else config.size;
 			const expires = @intCast(u32, std.time.timestamp()) + config.ttl;
 
 			const owned_key = try allocator.dupe(u8, key);

@@ -68,14 +68,16 @@ The third parameter is a `cache.PutConfig`:
 
 ```zig
 {
-    .size: u32 = 1,
     .ttl: u32 = 300,
+    .size: u32 = 1,
 }
 ```
+`ttl` is the length, in second, to keep the value in the cache.
 
 `size` is the size of the value. This doesn't have to be the actual memory used by the value being cached. In many cases, the default of `1` is reasonable. However, if enforcement of the memory used by the cache is important, giving an approximate size (as memory usage or as a weighted value) will help. For example, if you're caching a string, the length of the string could make a reasonable argument for `size`. 
 
-`ttl` is the length, in second, to keep the value in the cache.
+If `T` defines a **public** method `size() u32`, this value will be used instead of the above configured `size`. This can be particularly useful with the `fetch` method.
+
 
 ## Fetch
 `cache.fetch` can be used to combine `get` and `put` by providing a custom function to load a missing value:
@@ -101,16 +103,17 @@ The last parameter to `fetch` is the same as the last parameter to `put`.
 
 Fetch  does not do duplicate function call suppression. Concurrent calls to `fetch` using the same key can result in multiple functions to your callback functions. In other words, fetch is vulnerable to the thundering herd problem. Considering using [singleflight.zig](https://github.com/karlseguin/singleflight.zig) within your fetch callback.
 
+The `size` of the value might not be known until the value is fetched, this makes passing `size` into fetch impossible. If `T` defines a **public** method `size() u32`, then `T.size(value)` will be called to get the size.
+
 ## Entry Thread Safety
 It's possible for one thread to `get` an entry, while another thread deletes it. This deletion could be explicit (a call to `cache.del` or replacing a value with `cache.put`) or implicit (a call to `cache.put` causing the cache to free memory). To ensure that deleted entries can safely be used by the application, atomic reference counting is used. While a deleted entry is immediately removed from the cache, it remains valid until all references are removed.
 
 This is why `release` must be called on the entry returned by `get` and `getEntry`. Calling `release` multiple times on a single entry will break the cache.
 
 ## removedFromCache notification
-If `T` defines the method `removedFromCache`, `T.removedFromCache(Allocator)` will be called when all references are to entry are removed but before the entry is destroyed. `removedFromCache` will be called regardless of why the entry was removed.
+If `T` defines a **public** method `removedFromCache`, `T.removedFromCache(Allocator)` will be called when all references are to entry are removed but before the entry is destroyed. `removedFromCache` will be called regardless of why the entry was removed.
 
 The `Allocator` passed to `removedFromCache` is the `Allocator` that the cache was created with - this may or may not be an allocator that is meaningful to the value.
-
 
 ## delPrefix
 `cache.delPrefix` can be used to delete any entry that starts with the specified prefix. This requires an O(N) scan through the cache. However, some optimizations are done to limit the amount of write-lock this places on the cache.

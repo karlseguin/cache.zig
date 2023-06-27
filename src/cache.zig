@@ -39,7 +39,7 @@ pub fn Cache(comptime T: type) type {
 			const segment_config = .{
 				.max_size = segment_max_size,
 				.protected_removal = config.protected_removal,
-				.target_size = segment_max_size - @intFromFloat(u32, @floatFromInt(f32, segment_max_size) * shrink_ratio),
+				.target_size = segment_max_size - @as(u32, @intFromFloat(@as(f32, @floatFromInt(segment_max_size)) * shrink_ratio)),
 				.gets_per_promote = config.gets_per_promote,
 			};
 

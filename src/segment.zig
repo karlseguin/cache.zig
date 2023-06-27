@@ -110,7 +110,7 @@ pub fn Segment(comptime T: type) type {
 
 		pub fn put(self: *Self, allocator: Allocator, key: []const u8, value: T, config: cache.PutConfig) !*Entry {
 			const entry_size = if (IS_SIZED) T.size(value) else config.size;
-			const expires = @intCast(u32, std.time.timestamp()) + config.ttl;
+			const expires = @as(u32, @intCast(std.time.timestamp())) + config.ttl;
 
 			const owned_key = try allocator.dupe(u8, key);
 			const entry = try allocator.create(Entry);

@@ -111,7 +111,7 @@ It's possible for one thread to `get` an entry, while another thread deletes it.
 This is why `release` must be called on the entry returned by `get` and `getEntry`. Calling `release` multiple times on a single entry will break the cache.
 
 ## removedFromCache notification
-If `T` defines a **public** method `removedFromCache`, `T.removedFromCache(Allocator)` will be called when all references are to entry are removed but before the entry is destroyed. `removedFromCache` will be called regardless of why the entry was removed.
+If `T` defines a **public** method `removedFromCache`, `T.removedFromCache(Allocator)` will be called when all references are removed but before the entry is destroyed. `removedFromCache` will be called regardless of why the entry was removed.
 
 The `Allocator` passed to `removedFromCache` is the `Allocator` that the cache was created with - this may or may not be an allocator that is meaningful to the value.
 

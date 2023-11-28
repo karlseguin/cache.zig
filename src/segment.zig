@@ -6,7 +6,7 @@ const Allocator = std.mem.Allocator;
 pub fn Segment(comptime T: type) type {
 	const Entry = cache.Entry(T);
 	const List = @import("list.zig").List(*Entry);
-	const IS_SIZED = comptime std.meta.trait.hasFn("size")(T);
+	const IS_SIZED = comptime std.meta.hasFn(T, "size");
 
 	return struct {
 		// the current size.

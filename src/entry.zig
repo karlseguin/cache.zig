@@ -4,7 +4,7 @@ const Allocator = std.mem.Allocator;
 const List = @import("list.zig").List;
 
 pub fn Entry(comptime T: type) type {
-	const NOTIFY_REMOVAL = comptime std.meta.trait.hasFn("removedFromCache")(T);
+	const NOTIFY_REMOVAL = comptime std.meta.hasFn(T, "removedFromCache");
 
 	return struct {
 		// the cache key

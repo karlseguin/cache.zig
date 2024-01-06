@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) !void {
 	const optimize = b.standardOptimizeOption(.{});
 
 	_ = b.addModule("cache", .{
-		.source_file = .{ .path = "src/cache.zig" },
+		.root_source_file = .{ .path = "src/cache.zig" },
 	});
 
 	const lib_test = b.addTest(.{

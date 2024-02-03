@@ -10,7 +10,6 @@ pub const Config = struct {
 	segment_count: u16 = 8,
 	gets_per_promote: u8 = 5,
 	shrink_ratio: f32 = 0.2,
-	protected_removal: bool = false,
 };
 
 pub const PutConfig = struct {
@@ -38,7 +37,6 @@ pub fn Cache(comptime T: type) type {
 			const segment_max_size = config.max_size / segment_count;
 			const segment_config = .{
 				.max_size = segment_max_size,
-				.protected_removal = config.protected_removal,
 				.target_size = segment_max_size - @as(u32, @intFromFloat(@as(f32, @floatFromInt(segment_max_size)) * shrink_ratio)),
 				.gets_per_promote = config.gets_per_promote,
 			};

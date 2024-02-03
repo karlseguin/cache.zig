@@ -21,10 +21,6 @@ pub fn Segment(comptime T: type) type {
 		// items only get promoted on every N gets.
 		gets_per_promote: u8,
 
-		// whether or not to protect removal of entries which are "lent" to the
-		// application
-		protected_removal: bool,
-
 		// a double linked list with most recently used items at the head
 		// has its own internal mutex for thread-safety.
 		list: List,
@@ -44,7 +40,6 @@ pub fn Segment(comptime T: type) type {
 				.max_size = config.max_size,
 				.target_size = config.target_size,
 				.gets_per_promote = config.gets_per_promote,
-				.protected_removal = config.protected_removal,
 				.list = List.init(),
 				.lookup = std.StringHashMap(*Entry).init(allocator),
 			};

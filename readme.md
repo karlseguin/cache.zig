@@ -35,18 +35,21 @@ This is a typical LRU cache which combines a hashmap to lookup values and doubly
 
 To improve throughput, the cache is divided into a configured number of segments (defaults to 8). Locking only happens at the segment level. Furthermore, items are only promoted to the head of the recency linked list after a configured number of gets. This not only reduces the locking on the linked list, but also introduces a frequency bias to the eviction policy (which I think is welcome addition).
 
-The downside of this approach is that size enforcement and the eviction policy is done on a per-segment basis. Given a `max_size` of 8000 and a `segment_count` of 8, each segment will enforce its own `max_size` of 1000 and maintain its own recency list. Should keys be poorly distributed across segments, the cache will only reach a fraction of its configured max size. Only lease-recently used items within a segment are considered for eviction.
+The downside of this approach is that size enforcement and the eviction policy is done on a per-segment basis. Given a `max_size` of 8000 and a `segment_count` of 8, each segment will enforce its own `max_size` of 1000 and maintain its own recency list. Should keys be poorly distributed across segments, the cache will only reach a fraction of its configured max size. Only least-recently used items within a segment are considered for eviction.
 
 ## Configuration
-The 2nd argument to init is (including defaults):
+The 2nd argument to init is a `cache.Config`. It's fields with default values are:
 
 ```zig
 {
-    // The max size of the cache. By default, each value has a size of 1, but 
-    // this can be configured, on a per value basis, when using `cache.put`
+    // The max size of the cache. By default, each value has a size of 1. Thus
+    // given a `max_size` of 5000, the cache can hold up to 5000 items before
+    // having to evict entries. The size of a value can be set when using 
+    // `cache.put` or `cache.fetch`.
     max_size: u32 = 8000,
 
-    // The number of segments to use. Must be a power of 2. A value of 1 is valid.
+    // The number of segments to use. Must be a power of 2. 
+    // A value of 1 is valid.
     segment_count: u16 = 8,
 
     // The number of times get or getEntry must be called on a key before 
@@ -57,7 +60,7 @@ The 2nd argument to init is (including defaults):
     shrink_ratio: f32 = 0.2,
 }
 ```
-Given the above, each segment will enforce its own `max_size` of 1000 (i.e. `8000 / 8`). When a segment grows beyond 1000 entries will be removed until its size becomes less than or equal to 800 (i.e. `1000 - (1000 * 0.2)`)
+Given the above, each segment will enforce its own `max_size` of 1000 (i.e. `8000 / 8`). When a segment grows beyond 1000, entries will be removed until its size becomes less than or equal to 800 (i.e. `1000 - (1000 * 0.2)`)
 
 ## Put
 The `cache.put(key: []const u8, value: T, config: cache.PutConfig) !void` has a number of consideration.
@@ -72,7 +75,7 @@ The third parameter is a `cache.PutConfig`:
     .size: u32 = 1,
 }
 ```
-`ttl` is the length, in second, to keep the value in the cache.
+`ttl` is the length, in seconds, to keep the value in the cache.
 
 `size` is the size of the value. This doesn't have to be the actual memory used by the value being cached. In many cases, the default of `1` is reasonable. However, if enforcement of the memory used by the cache is important, giving an approximate size (as memory usage or as a weighted value) will help. For example, if you're caching a string, the length of the string could make a reasonable argument for `size`. 
 

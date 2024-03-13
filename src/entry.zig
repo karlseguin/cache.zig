@@ -65,15 +65,15 @@ pub fn Entry(comptime T: type) type {
 
 		pub fn hit(self: *Self) u8 {
 			// wrapping is fine.
-			return @atomicRmw(u8, &self._gets, .Add, 1, .SeqCst) + 1;
+			return @atomicRmw(u8, &self._gets, .Add, 1, .monotonic) + 1;
 		}
 
 		pub fn borrow(self: *Self) void {
-			_ = @atomicRmw(u16, &self._rc, .Add, 1, .SeqCst);
+			_ = @atomicRmw(u16, &self._rc, .Add, 1, .monotonic);
 		}
 
 		pub fn release(self: *Self) void {
-			if (@atomicRmw(u16, &self._rc, .Sub, 1, .SeqCst) != 1) {
+			if (@atomicRmw(u16, &self._rc, .Sub, 1, .monotonic) != 1) {
 				return;
 			}
 

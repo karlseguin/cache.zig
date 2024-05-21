@@ -5,11 +5,11 @@ pub fn build(b: *std.Build) !void {
 	const optimize = b.standardOptimizeOption(.{});
 
 	_ = b.addModule("cache", .{
-		.root_source_file = .{ .path = "src/cache.zig" },
+		.root_source_file = b.path("src/cache.zig"),
 	});
 
 	const lib_test = b.addTest(.{
-		.root_source_file = .{ .path = "src/cache.zig" },
+		.root_source_file = b.path("src/cache.zig"),
 		.target = target,
 		.optimize = optimize,
 	});

@@ -66,7 +66,7 @@ pub fn Segment(comptime T: type) type {
 			const entry = self.getInternal(key) orelse return null;
 
 			if (entry.expired()) {
-				// release getEntry's borrow
+				// release getInternal's borrow
 				entry.release();
 
 				self.mutex.lock();
@@ -74,6 +74,7 @@ pub fn Segment(comptime T: type) type {
 				self.size -= entry._size;
 				self.mutex.unlock();
 				self.list.remove(entry._node);
+
 				// and now release the cache's implicit borrow
 				entry.release();
 				return null;
@@ -122,34 +123,59 @@ pub fn Segment(comptime T: type) type {
 			const entry_size = if (IS_SIZED) T.size(value) else config.size;
 			const expires = @as(u32, @intCast(std.time.timestamp())) + config.ttl;
 
-			const owned_key = try allocator.dupe(u8, key);
+			var lookup = &self.lookup;
+			var existing_entry: ?*Entry = null;
 			const entry = try allocator.create(Entry);
-			const node = try allocator.create(List.Node);
-			node.* = List.Node{.value = entry};
-			entry.* = Entry.init(allocator, owned_key, value, entry_size, expires);
-			entry._node = node;
+
+			var segment_size = blk: {
+				// This blocks exist so that we can correctly errdefer. This it a common
+				// issue with errdefer: there can be a point before the function returns
+				// where you no longer want to rollback.
+				errdefer allocator.destroy(entry);
+
+				const node = try allocator.create(List.Node);
+				errdefer allocator.destroy(node);
+
+				// Tempting to only dupe this if this is a new entry for this key. But
+				// that adds a lot of complexity and might not even work. First, it would
+				// require dupe under lock (in the gop.found_existing == false case).
+				// Second, there are features that rely on entry.key. Now, duping under
+				// lock is probably worth it in exchange for less duping. And we could
+				// point entry.key = gop.key_ptr.*, but I'm not sure that would work
+				// in all cases. Like, who/when do we free the key? If we free it
+				// when the item is removed from the cache, then you'd have some still
+				// referenced entries with an undefined key. Because those entries would
+				// no longer be in the cache, maybe that's fine, but it's risky and
+				// could easily be messed up in future code.
+				const owned_key = try allocator.dupe(u8, key);
+				errdefer allocator.free(owned_key);
+
+				node.* = List.Node{.value = entry};
+				entry.* = Entry.init(allocator, owned_key, value, entry_size, expires);
+				entry._node = node;
+
+				{
+					self.mutex.lock();
+					defer self.mutex.unlock();
+
+					var size = self.size;
+					const gop = try lookup.getOrPut(owned_key);
+
+					if (gop.found_existing) {
+						existing_entry = gop.value_ptr.*;
+						gop.value_ptr.* = entry;
+						gop.key_ptr.* = owned_key;
+						size = size - existing_entry.?._size + entry_size;
+					} else {
+						gop.value_ptr.* = entry;
+						size = size + entry_size;
+					}
+					self.size = size;
+					break :blk size;
+				}
+			};
 
 			var list = &self.list;
-			var lookup = &self.lookup;
-			const mutex = &self.mutex;
-			var existing_entry: ?*Entry = null;
-
-			mutex.lock();
-			var segment_size = self.size;
-			const gop = try lookup.getOrPut(key);
-			if (gop.found_existing) {
-				existing_entry = gop.value_ptr.*;
-				gop.value_ptr.* = entry;
-				gop.key_ptr.* = owned_key; // aka, entry.key
-				segment_size = segment_size - existing_entry.?._size + entry_size;
-			} else {
-				gop.key_ptr.* = owned_key;
-				gop.value_ptr.* = entry;
-				segment_size = segment_size + entry_size;
-			}
-			self.size = segment_size;
-			mutex.unlock();
-
 			if (existing_entry) |existing| {
 				list.remove(existing._node);
 				existing.release();
@@ -165,7 +191,8 @@ pub fn Segment(comptime T: type) type {
 			// is under our target_size
 			const target_size = self.target_size;
 
-			mutex.lock();
+			self.mutex.lock();
+			defer self.mutex.unlock();
 			// recheck
 			segment_size = self.size;
 			while (segment_size > target_size) {
@@ -180,7 +207,6 @@ pub fn Segment(comptime T: type) type {
 			}
 			// we're still under lock
 			self.size = segment_size;
-			mutex.unlock();
 
 			return entry;
 		}
@@ -217,7 +243,7 @@ pub fn Segment(comptime T: type) type {
 		// This is an expensive call (even more so since we know this is being called
 		// on each segment). We optimize what we can, by first collecting the matching
 		// entries under a shared lock. This is nice since the expensive prefix match
-		// won'ts block concurrent gets.
+		// won't block concurrent gets.
 		pub fn delPrefix(self: *Self, allocator: Allocator, prefix: []const u8) !usize {
 			var matching = std.ArrayList(*Entry).init(allocator);
 			defer matching.deinit();

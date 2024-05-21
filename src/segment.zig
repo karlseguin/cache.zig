@@ -15,7 +15,7 @@ pub fn Segment(comptime T: type) type {
 		// the maximum size we should allow this segment to grow to
 		max_size: u32,
 
-		// the size we should rougly trim to when we've reached max_size
+		// the size we should roughly trim to when we've reached max_size
 		target_size: u32,
 
 		// items only get promoted on every N gets.
@@ -63,7 +63,8 @@ pub fn Segment(comptime T: type) type {
 		}
 
 		pub fn get(self: *Self, key: []const u8) ?*Entry {
-			const entry = self.getEntry(key) orelse return null;
+			const entry = self.getInternal(key) orelse return null;
+
 			if (entry.expired()) {
 				// release getEntry's borrow
 				entry.release();
@@ -77,16 +78,34 @@ pub fn Segment(comptime T: type) type {
 				entry.release();
 				return null;
 			}
+
+			if (@rem(entry.hit(), self.gets_per_promote) == 0) {
+				self.list.moveToFront(entry._node);
+			}
+
 			return entry;
 		}
 
 		pub fn getEntry(self: *Self, key: []const u8) ?*Entry {
+			const entry = self.getInternal(key) orelse return null;
+
+			if (!entry.expired() and @rem(entry.hit(), self.gets_per_promote) == 0) {
+				self.list.moveToFront(entry._node);
+			}
+
+			return entry;
+		}
+
+		// Used by both get and getEntry. Those two methods differ in their handling
+		// of expiration, but they share the following to fetch the entry.
+		fn getInternal(self: *Self, key: []const u8) ?*Entry {
 			self.mutex.lockShared();
 			const optional_entry = self.lookup.get(key);
 			const entry = optional_entry orelse {
 				self.mutex.unlockShared();
 				return null;
 			};
+
 			// Even though entry.borrow() increments entry._gc atomically, it has to
 			// be called under the mutex. If we move the call to entry.borrow() after
 			// releating the mutex, a del or put could slip in, see that _gc == 0
@@ -95,10 +114,6 @@ pub fn Segment(comptime T: type) type {
 			// read lock and multiple threads could be accessing the entry concurrently)
 			entry.borrow();
 			self.mutex.unlockShared();
-
-			if (!entry.expired() and @rem(entry.hit(), self.gets_per_promote) == 0) {
-				self.list.moveToFront(entry._node);
-			}
 
 			return entry;
 		}

@@ -24,7 +24,7 @@ _ = user_cache.del("user1");
 
 `get` will return `null` if the key is not found, or if the entry associated with the key has expired. If the entry has expired, it will be removed.
 
-`getEntry` can be used to return the entry even if it has expired once. While `getEntry` returns the value it also removes it from the cache.
+`getEntry` can be used to return the entry even if it has expired. While `getEntry` will return en expired item, it will not promote a expired item in the recency list. The main purpose is to allow the caller to serve a stale value while fetching a new one.
 
 In either case, the entry's `ttl() i64` method can be used to return the number of seconds until the entry expires. This will be negative if the entry has already expired. The `expired() bool` method will return `true` if the entry is expired.
 

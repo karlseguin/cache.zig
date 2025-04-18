@@ -65,7 +65,9 @@ pub fn Entry(comptime T: type) type {
 
 		pub fn hit(self: *Self) u8 {
 			// wrapping is fine.
-			return @atomicRmw(u8, &self._gets, .Add, 1, .monotonic) + 1;
+			const prev = @atomicRmw(u8, &self._gets, .Add, 1, .monotonic);
+			const result, _ = @addWithOverflow(prev, 1);
+			return result;
 		}
 
 		pub fn borrow(self: *Self) void {

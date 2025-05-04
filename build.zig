@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    _ = b.addModule("cache_zig", .{
+    _ = b.addModule("cache", .{
         .root_source_file = b.path("src/cache.zig"),
     });
 

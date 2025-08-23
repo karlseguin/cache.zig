@@ -12,5 +12,5 @@ pub const expectString = std.testing.expectEqualStrings;
 pub const Entry = cache.Entry(i32);
 
 pub fn initCache() cache.Cache(i32) {
-	return cache.Cache(i32).init(allocator, .{.segment_count = 2}) catch unreachable;
+    return cache.Cache(i32).init(allocator, .{ .segment_count = 2 }) catch unreachable;
 }

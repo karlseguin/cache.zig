@@ -245,14 +245,14 @@ pub fn Segment(comptime T: type) type {
 		// entries under a shared lock. This is nice since the expensive prefix match
 		// won't block concurrent gets.
 		pub fn delPrefix(self: *Self, allocator: Allocator, prefix: []const u8) !usize {
-			var matching = std.ArrayList(*Entry).init(allocator);
-			defer matching.deinit();
+			var matching: std.ArrayList(*Entry) = .empty;
+			defer matching.deinit(allocator);
 
 			self.mutex.lockShared();
 			var it = self.lookup.iterator();
 			while (it.next()) |map_entry| {
 				if (std.mem.startsWith(u8, map_entry.key_ptr.*, prefix)) {
-					try matching.append(map_entry.value_ptr.*);
+					try matching.append(allocator, map_entry.value_ptr.*);
 				}
 			}
 			self.mutex.unlockShared();

@@ -265,8 +265,11 @@ pub fn Segment(comptime T: type) type {
             var lookup = &self.lookup;
             self.mutex.lock();
             for (entries) |entry| {
-                self.size -= entry._size;
-                _ = lookup.remove(entry.key);
+                // Use saturating subtraction to handle race condition where
+                // entry was already deleted between shared and exclusive lock
+                if (lookup.remove(entry.key)) {
+                    self.size = self.size -| entry._size;
+                }
             }
             self.mutex.unlock();
 

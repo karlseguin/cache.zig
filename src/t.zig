@@ -10,8 +10,8 @@ pub const expectEqual = std.testing.expectEqual;
 pub const expectError = std.testing.expectError;
 pub const expectString = std.testing.expectEqualStrings;
 
-pub const Entry = cache.Entry(i32);
+pub const Entry = cache.StringCache(i32).Entry;
 
-pub fn initCache() cache.Cache(i32) {
-    return cache.Cache(i32).init(io, allocator, .{ .segment_count = 2 }) catch unreachable;
+pub fn initCache() cache.StringCache(i32) {
+    return cache.StringCache(i32).init(io, allocator, .{ .segment_count = 2 }) catch unreachable;
 }

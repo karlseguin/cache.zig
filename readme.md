@@ -7,9 +7,9 @@ This is for Zig 0.16.0. Use the [zig-0.15](https://github.com/karlseguin/cached.
 
 ```zig
 // package available using Zig's built-in package manager
-const user_cache = @import("cache");
+const cache = @import("cache");
 
-var user_cache = try cache.Cache(User).init(io, allocator, .{.max_size = 10000});
+var user_cache = try cache.StringCache(User).init(io, allocator, .{.max_size = 10000});
 defer user_cache.deinit();
 
 try user_cache.put("user1", user1, .{.ttl = 300});
@@ -33,6 +33,43 @@ _ = user_cache.del("user1");
 In either case, the entry's `ttl(std.Io) i64` method can be used to return the number of seconds until the entry expires. This will be negative if the entry has already expired. The `expired(std.Io) bool` method will return `true` if the entry is expired. (Both of these methods take an `std.Io` parameter as to avoid having to store a reference in every `Entry` instance)
 
 `release` must be called on the returned entry.
+
+The entry type is available as `cache.StringCache(User).Entry`.
+
+## Key Types
+`cache.StringCache(V)` is a cache with `[]const u8` keys and is what most code wants. It is a thin wrapper around the fully generic `cache.Cache(K, V, Ctx)`, where `Ctx` is a type that tells the cache how to treat keys of type `K`:
+
+```zig
+const U32Context = struct {
+    // required
+    pub fn hash(key: u32) u64 {
+        return std.hash.Wyhash.hash(0, std.mem.asBytes(&key));
+    }
+
+    // required
+    pub fn eql(a: u32, b: u32) bool {
+        return a == b;
+    }
+};
+
+var user_cache = try cache.Cache(u32, User, U32Context).init(io, allocator, .{});
+```
+
+`hash` and `eql` are required. Three more functions are optional:
+
+```zig
+// Both or neither. When present, keys are cloned on put and freed when the
+// entry is destroyed, so the caller need not keep the key valid after put
+// returns. Required when K holds memory the caller owns (slices, pointers).
+// When absent, keys are copied by value.
+pub fn clone(allocator: Allocator, key: K) !K
+pub fn free(allocator: Allocator, key: K) void
+
+// Enables cache.delPrefix. Without it, calling delPrefix is a compile error.
+pub fn isPrefix(prefix: K, key: K) bool
+```
+
+`cache.StringContext` (what `StringCache` uses) defines all five and serves as a reference.
 
 ## Implementation
 This is a typical LRU cache which combines a hashmap to lookup values and doubly linked list to track recency. 
@@ -67,9 +104,9 @@ The 2nd argument to init is a `cache.Config`. It's fields with default values ar
 Given the above, each segment will enforce its own `max_size` of 1000 (i.e. `8000 / 8`). When a segment grows beyond 1000, entries will be removed until its size becomes less than or equal to 800 (i.e. `1000 - (1000 * 0.2)`)
 
 ## Put
-The `cache.put(key: []const u8, value: T, config: cache.PutConfig) !void` has a number of consideration.
+The `cache.put(key: K, value: V, config: cache.PutConfig) !void` has a number of consideration.
 
-First, the key will be cloned and managed by the cache. The caller does not have to guarantee its validity after `put` returns.
+First, with `StringCache` (or any context defining `clone`), the key will be cloned and managed by the cache. The caller does not have to guarantee its validity after `put` returns.
 
 The third parameter is a `cache.PutConfig`: 
 
@@ -83,7 +120,7 @@ The third parameter is a `cache.PutConfig`:
 
 `size` is the size of the value. This doesn't have to be the actual memory used by the value being cached. In many cases, the default of `1` is reasonable. However, if enforcement of the memory used by the cache is important, giving an approximate size (as memory usage or as a weighted value) will help. For example, if you're caching a string, the length of the string could make a reasonable argument for `size`. 
 
-If `T` defines a **public** method `size() u32`, this value will be used instead of the above configured `size`. This can be particularly useful with the `fetch` method.
+If `V` defines a **public** method `size() u32`, this value will be used instead of the above configured `size`. This can be particularly useful with the `fetch` method.
 
 
 ## Fetch
@@ -110,7 +147,7 @@ The last parameter to `fetch` is the same as the last parameter to `put`.
 
 Fetch  does not do duplicate function call suppression. Concurrent calls to `fetch` using the same key can result in multiple functions to your callback functions. In other words, fetch is vulnerable to the thundering herd problem. Considering using [singleflight.zig](https://github.com/karlseguin/singleflight.zig) within your fetch callback.
 
-The `size` of the value might not be known until the value is fetched, this makes passing `size` into fetch impossible. If `T` defines a **public** method `size() u32`, then `T.size(value)` will be called to get the size.
+The `size` of the value might not be known until the value is fetched, this makes passing `size` into fetch impossible. If `V` defines a **public** method `size() u32`, then `V.size(value)` will be called to get the size.
 
 ## Entry Thread Safety
 It's possible for one thread to `get` an entry, while another thread deletes it. This deletion could be explicit (a call to `cache.del` or replacing a value with `cache.put`) or implicit (a call to `cache.put` causing the cache to free memory). To ensure that deleted entries can safely be used by the application, atomic reference counting is used. While a deleted entry is immediately removed from the cache, it remains valid until all references are removed.
@@ -118,9 +155,11 @@ It's possible for one thread to `get` an entry, while another thread deletes it.
 This is why `release` must be called on the entry returned by `get` and `getEntry`. Calling `release` multiple times on a single entry will break the cache.
 
 ## removedFromCache notification
-If `T` defines a **public** method `removedFromCache`, `T.removedFromCache(Allocator)` will be called when all references are removed but before the entry is destroyed. `removedFromCache` will be called regardless of why the entry was removed.
+If `V` defines a **public** method `removedFromCache`, `V.removedFromCache(Allocator)` will be called when all references are removed but before the entry is destroyed. `removedFromCache` will be called regardless of why the entry was removed.
 
 The `Allocator` passed to `removedFromCache` is the `Allocator` that the cache was created with - this may or may not be an allocator that is meaningful to the value.
 
 ## delPrefix
 `cache.delPrefix` can be used to delete any entry that starts with the specified prefix. This requires an O(N) scan through the cache. However, some optimizations are done to limit the amount of write-lock this places on the cache.
+
+This is available on `StringCache`, and on `Cache(K, V, Ctx)` when `Ctx` defines `isPrefix`.

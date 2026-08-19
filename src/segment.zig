@@ -4,10 +4,23 @@ const cache = @import("cache.zig");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
-pub fn Segment(comptime T: type) type {
-    const Entry = cache.Entry(T);
+pub fn Segment(comptime K: type, comptime V: type, comptime Ctx: type) type {
+    const Entry = @import("entry.zig").Entry(K, V, Ctx);
     const List = @import("list.zig").List(*Entry);
-    const IS_SIZED = comptime std.meta.hasFn(T, "size");
+    const IS_SIZED = comptime std.meta.hasFn(V, "size");
+    const CLONE_KEY = comptime std.meta.hasFn(Ctx, "clone");
+
+    // adapts the user-supplied Ctx (plain functions) to std.HashMap's context
+    // interface (methods on a context instance)
+    const MapContext = struct {
+        pub fn hash(_: @This(), key: K) u64 {
+            return Ctx.hash(key);
+        }
+        pub fn eql(_: @This(), a: K, b: K) bool {
+            return Ctx.eql(a, b);
+        }
+    };
+    const Lookup = std.HashMap(K, *Entry, MapContext, std.hash_map.default_max_load_percentage);
 
     return struct {
         io: Io,
@@ -32,7 +45,7 @@ pub fn Segment(comptime T: type) type {
         mutex: Io.RwLock,
 
         // key => entry
-        lookup: std.StringHashMap(*Entry),
+        lookup: Lookup,
 
         const Self = @This();
 
@@ -45,7 +58,7 @@ pub fn Segment(comptime T: type) type {
                 .target_size = config.target_size,
                 .gets_per_promote = config.gets_per_promote,
                 .list = List.init(),
-                .lookup = std.StringHashMap(*Entry).init(allocator),
+                .lookup = Lookup.init(allocator),
             };
         }
 
@@ -61,14 +74,14 @@ pub fn Segment(comptime T: type) type {
             self.lookup.deinit();
         }
 
-        pub fn contains(self: *Self, key: []const u8) bool {
+        pub fn contains(self: *Self, key: K) bool {
             const io = self.io;
             self.mutex.lockSharedUncancelable(io);
             defer self.mutex.unlockShared(io);
             return self.lookup.contains(key);
         }
 
-        pub fn get(self: *Self, key: []const u8) ?*Entry {
+        pub fn get(self: *Self, key: K) ?*Entry {
             const io = self.io;
             const entry = self.getInternal(key) orelse return null;
 
@@ -94,7 +107,7 @@ pub fn Segment(comptime T: type) type {
             return entry;
         }
 
-        pub fn getEntry(self: *Self, key: []const u8) ?*Entry {
+        pub fn getEntry(self: *Self, key: K) ?*Entry {
             const entry = self.getInternal(key) orelse return null;
 
             const io = self.io;
@@ -107,7 +120,7 @@ pub fn Segment(comptime T: type) type {
 
         // Used by both get and getEntry. Those two methods differ in their handling
         // of expiration, but they share the following to fetch the entry.
-        fn getInternal(self: *Self, key: []const u8) ?*Entry {
+        fn getInternal(self: *Self, key: K) ?*Entry {
             const io = self.io;
             self.mutex.lockSharedUncancelable(io);
             const optional_entry = self.lookup.get(key);
@@ -128,9 +141,9 @@ pub fn Segment(comptime T: type) type {
             return entry;
         }
 
-        pub fn put(self: *Self, allocator: Allocator, key: []const u8, value: T, config: cache.PutConfig) !*Entry {
+        pub fn put(self: *Self, allocator: Allocator, key: K, value: V, config: cache.PutConfig) !*Entry {
             const io = self.io;
-            const entry_size = if (IS_SIZED) T.size(value) else config.size;
+            const entry_size = if (IS_SIZED) V.size(value) else config.size;
             const expires = @as(u32, @intCast(std.Io.Timestamp.now(io, .real).toSeconds())) + config.ttl;
 
             var lookup = &self.lookup;
@@ -146,19 +159,19 @@ pub fn Segment(comptime T: type) type {
                 const node = try allocator.create(List.Node);
                 errdefer allocator.destroy(node);
 
-                // Tempting to only dupe this if this is a new entry for this key. But
+                // Tempting to only clone this if this is a new entry for this key. But
                 // that adds a lot of complexity and might not even work. First, it would
-                // require dupe under lock (in the gop.found_existing == false case).
-                // Second, there are features that rely on entry.key. Now, duping under
-                // lock is probably worth it in exchange for less duping. And we could
+                // require clone under lock (in the gop.found_existing == false case).
+                // Second, there are features that rely on entry.key. Now, cloning under
+                // lock is probably worth it in exchange for less cloning. And we could
                 // point entry.key = gop.key_ptr.*, but I'm not sure that would work
                 // in all cases. Like, who/when do we free the key? If we free it
                 // when the item is removed from the cache, then you'd have some still
                 // referenced entries with an undefined key. Because those entries would
                 // no longer be in the cache, maybe that's fine, but it's risky and
                 // could easily be messed up in future code.
-                const owned_key = try allocator.dupe(u8, key);
-                errdefer allocator.free(owned_key);
+                const owned_key = if (CLONE_KEY) try Ctx.clone(allocator, key) else key;
+                errdefer if (CLONE_KEY) Ctx.free(allocator, owned_key);
 
                 node.* = List.Node{ .value = entry };
                 entry.* = Entry.init(allocator, owned_key, value, entry_size, expires);
@@ -222,7 +235,7 @@ pub fn Segment(comptime T: type) type {
         }
 
         // TOOD: singleflight
-        pub fn fetch(self: *Self, comptime S: type, allocator: Allocator, key: []const u8, loader: *const fn (state: S, key: []const u8) anyerror!?T, state: S, config: cache.PutConfig) !?*Entry {
+        pub fn fetch(self: *Self, comptime S: type, allocator: Allocator, key: K, loader: *const fn (state: S, key: K) anyerror!?V, state: S, config: cache.PutConfig) !?*Entry {
             if (self.get(key)) |v| {
                 return v;
             }
@@ -234,7 +247,7 @@ pub fn Segment(comptime T: type) type {
             return null;
         }
 
-        pub fn del(self: *Self, key: []const u8) bool {
+        pub fn del(self: *Self, key: K) bool {
             const io = self.io;
             self.mutex.lockUncancelable(io);
             const existing = self.lookup.fetchRemove(key);
@@ -255,7 +268,7 @@ pub fn Segment(comptime T: type) type {
         // on each segment). We optimize what we can, by first collecting the matching
         // entries under a shared lock. This is nice since the expensive prefix match
         // won't block concurrent gets.
-        pub fn delPrefix(self: *Self, allocator: Allocator, prefix: []const u8) !usize {
+        pub fn delPrefix(self: *Self, allocator: Allocator, prefix: K) !usize {
             const io = self.io;
             var matching: std.ArrayList(*Entry) = .empty;
             defer matching.deinit(allocator);
@@ -263,7 +276,7 @@ pub fn Segment(comptime T: type) type {
             self.mutex.lockSharedUncancelable(io);
             var it = self.lookup.iterator();
             while (it.next()) |map_entry| {
-                if (std.mem.startsWith(u8, map_entry.key_ptr.*, prefix)) {
+                if (Ctx.isPrefix(prefix, map_entry.key_ptr.*)) {
                     try matching.append(allocator, map_entry.value_ptr.*);
                 }
             }

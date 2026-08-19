@@ -3,15 +3,16 @@ const Allocator = std.mem.Allocator;
 
 const List = @import("list.zig").List;
 
-pub fn Entry(comptime T: type) type {
-    const NOTIFY_REMOVAL = comptime std.meta.hasMethod(T, "removedFromCache");
+pub fn Entry(comptime K: type, comptime V: type, comptime Ctx: type) type {
+    const NOTIFY_REMOVAL = comptime std.meta.hasMethod(V, "removedFromCache");
+    const FREE_KEY = comptime std.meta.hasFn(Ctx, "free");
 
     return struct {
         // the cache key
-        key: []const u8,
+        key: K,
 
         // the user supplied value
-        value: T,
+        value: V,
 
         // absolute time, in seconds, that the entry expires
         expires: u32,
@@ -42,7 +43,7 @@ pub fn Entry(comptime T: type) type {
 
         const Self = @This();
 
-        pub fn init(allocator: Allocator, key: []const u8, value: T, size: u32, expires: u32) Self {
+        pub fn init(allocator: Allocator, key: K, value: V, size: u32, expires: u32) Self {
             return .{
                 ._rc = 1, // the cache itself has an rc
                 ._gets = 0,
@@ -88,7 +89,9 @@ pub fn Entry(comptime T: type) type {
             if (NOTIFY_REMOVAL) {
                 self.value.removedFromCache(allocator);
             }
-            allocator.free(self.key);
+            if (FREE_KEY) {
+                Ctx.free(allocator, self.key);
+            }
             allocator.destroy(node);
             allocator.destroy(self);
         }

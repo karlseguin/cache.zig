@@ -1,6 +1,5 @@
 const std = @import("std");
 
-pub const Entry = @import("entry.zig").Entry;
 const Segment = @import("segment.zig").Segment;
 
 const Io = std.Io;
@@ -18,13 +17,47 @@ pub const PutConfig = struct {
     size: u32 = 1,
 };
 
-pub fn Cache(comptime T: type) type {
+pub const StringContext = struct {
+    pub fn hash(key: []const u8) u64 {
+        return std.hash.Wyhash.hash(0, key);
+    }
+
+    pub fn eql(a: []const u8, b: []const u8) bool {
+        return std.mem.eql(u8, a, b);
+    }
+
+    pub fn clone(allocator: Allocator, key: []const u8) ![]const u8 {
+        return allocator.dupe(u8, key);
+    }
+
+    pub fn free(allocator: Allocator, key: []const u8) void {
+        allocator.free(key);
+    }
+
+    pub fn isPrefix(prefix: []const u8, key: []const u8) bool {
+        return std.mem.startsWith(u8, key, prefix);
+    }
+};
+
+// A cache with []const u8 keys. This is what most people want.
+pub fn StringCache(comptime V: type) type {
+    return Cache([]const u8, V, StringContext);
+}
+
+pub fn Cache(comptime K: type, comptime V: type, comptime Ctx: type) type {
+    comptime validateContext(K, Ctx);
+
     return struct {
         allocator: Allocator,
         segment_mask: u16,
-        segments: []Segment(T),
+        segments: []Segment(K, V, Ctx),
 
         const Self = @This();
+
+        pub const Key = K;
+        pub const Value = V;
+        pub const Context = Ctx;
+        pub const Entry = @import("entry.zig").Entry(K, V, Ctx);
 
         pub fn init(io: Io, allocator: Allocator, config: Config) !Self {
             const segment_count = config.segment_count;
@@ -42,9 +75,9 @@ pub fn Cache(comptime T: type) type {
                 .gets_per_promote = config.gets_per_promote,
             };
 
-            const segments = try allocator.alloc(Segment(T), segment_count);
+            const segments = try allocator.alloc(Segment(K, V, Ctx), segment_count);
             for (0..segment_count) |i| {
-                segments[i] = Segment(T).init(io, allocator, segment_config);
+                segments[i] = Segment(K, V, Ctx).init(io, allocator, segment_config);
             }
 
             return .{
@@ -62,27 +95,30 @@ pub fn Cache(comptime T: type) type {
             allocator.free(self.segments);
         }
 
-        pub fn contains(self: *const Self, key: []const u8) bool {
+        pub fn contains(self: *const Self, key: K) bool {
             return self.getSegment(key).contains(key);
         }
 
-        pub fn get(self: *Self, key: []const u8) ?*Entry(T) {
+        pub fn get(self: *Self, key: K) ?*Entry {
             return self.getSegment(key).get(key);
         }
 
-        pub fn getEntry(self: *const Self, key: []const u8) ?*Entry(T) {
+        pub fn getEntry(self: *const Self, key: K) ?*Entry {
             return self.getSegment(key).getEntry(key);
         }
 
-        pub fn put(self: *Self, key: []const u8, value: T, config: PutConfig) !void {
+        pub fn put(self: *Self, key: K, value: V, config: PutConfig) !void {
             _ = try self.getSegment(key).put(self.allocator, key, value, config);
         }
 
-        pub fn del(self: *Self, key: []const u8) bool {
+        pub fn del(self: *Self, key: K) bool {
             return self.getSegment(key).del(key);
         }
 
-        pub fn delPrefix(self: *Self, prefix: []const u8) !usize {
+        pub fn delPrefix(self: *Self, prefix: K) !usize {
+            comptime if (!std.meta.hasFn(Ctx, "isPrefix")) {
+                @compileError("delPrefix requires the cache context (" ++ @typeName(Ctx) ++ ") to define isPrefix(prefix: K, key: K) bool");
+            };
             var total: usize = 0;
             const allocator = self.allocator;
             for (self.segments) |*segment| {
@@ -91,7 +127,7 @@ pub fn Cache(comptime T: type) type {
             return total;
         }
 
-        pub fn fetch(self: *Self, comptime S: type, key: []const u8, loader: *const fn (state: S, key: []const u8) anyerror!?T, state: S, config: PutConfig) !?*Entry(T) {
+        pub fn fetch(self: *Self, comptime S: type, key: K, loader: *const fn (state: S, key: K) anyerror!?V, state: S, config: PutConfig) !?*Entry {
             return self.getSegment(key).fetch(S, self.allocator, key, loader, state, config);
         }
 
@@ -99,11 +135,24 @@ pub fn Cache(comptime T: type) type {
             return self.segments[0].max_size * self.segments.len;
         }
 
-        fn getSegment(self: *const Self, key: []const u8) *Segment(T) {
-            const hash_code = std.hash.Wyhash.hash(0, key);
+        fn getSegment(self: *const Self, key: K) *Segment(K, V, Ctx) {
+            const hash_code = Ctx.hash(key);
             return &self.segments[hash_code & self.segment_mask];
         }
     };
+}
+
+fn validateContext(comptime K: type, comptime Ctx: type) void {
+    const name = @typeName(Ctx);
+    if (!std.meta.hasFn(Ctx, "hash")) {
+        @compileError("cache context " ++ name ++ " must define: pub fn hash(key: " ++ @typeName(K) ++ ") u64");
+    }
+    if (!std.meta.hasFn(Ctx, "eql")) {
+        @compileError("cache context " ++ name ++ " must define: pub fn eql(a: " ++ @typeName(K) ++ ", b: " ++ @typeName(K) ++ ") bool");
+    }
+    if (std.meta.hasFn(Ctx, "clone") != std.meta.hasFn(Ctx, "free")) {
+        @compileError("cache context " ++ name ++ " must define both clone and free, or neither");
+    }
 }
 
 test {
@@ -112,10 +161,10 @@ test {
 
 const t = @import("t.zig");
 test "cache: invalid config" {
-    try t.expectError(error.SegmentBucketNotPower2, Cache(u8).init(t.io, t.allocator, .{ .segment_count = 0 }));
-    try t.expectError(error.SegmentBucketNotPower2, Cache(u8).init(t.io, t.allocator, .{ .segment_count = 3 }));
-    try t.expectError(error.SegmentBucketNotPower2, Cache(u8).init(t.io, t.allocator, .{ .segment_count = 10 }));
-    try t.expectError(error.SegmentBucketNotPower2, Cache(u8).init(t.io, t.allocator, .{ .segment_count = 30 }));
+    try t.expectError(error.SegmentBucketNotPower2, StringCache(u8).init(t.io, t.allocator, .{ .segment_count = 0 }));
+    try t.expectError(error.SegmentBucketNotPower2, StringCache(u8).init(t.io, t.allocator, .{ .segment_count = 3 }));
+    try t.expectError(error.SegmentBucketNotPower2, StringCache(u8).init(t.io, t.allocator, .{ .segment_count = 10 }));
+    try t.expectError(error.SegmentBucketNotPower2, StringCache(u8).init(t.io, t.allocator, .{ .segment_count = 30 }));
 }
 
 test "cache: get null" {
@@ -209,7 +258,7 @@ test "cache: ttl" {
 }
 
 test "cache: get promotion" {
-    var cache = try Cache(i32).init(t.io, t.allocator, .{ .segment_count = 1, .gets_per_promote = 3 });
+    var cache = try StringCache(i32).init(t.io, t.allocator, .{ .segment_count = 1, .gets_per_promote = 3 });
     defer cache.deinit();
 
     try cache.put("k1", 1, .{});
@@ -235,7 +284,7 @@ test "cache: get promotion" {
 }
 
 test "cache: get promotion expired" {
-    var cache = try Cache(i32).init(t.io, t.allocator, .{ .segment_count = 1, .gets_per_promote = 3 });
+    var cache = try StringCache(i32).init(t.io, t.allocator, .{ .segment_count = 1, .gets_per_promote = 3 });
     defer cache.deinit();
 
     try cache.put("k1", 1, .{ .ttl = 0 });
@@ -286,7 +335,7 @@ test "cache: fetch" {
 }
 
 test "cache: enforce max_size" {
-    var cache = try Cache(i32).init(t.io, t.allocator, .{ .max_size = 5, .segment_count = 1 });
+    var cache = try StringCache(i32).init(t.io, t.allocator, .{ .max_size = 5, .segment_count = 1 });
     defer cache.deinit();
 
     try cache.put("k1", 1, .{});
@@ -310,7 +359,7 @@ test "cache: enforce max_size" {
 }
 
 test "cache: enforce sized() " {
-    var cache = try Cache(TestSized).init(t.io, t.allocator, .{ .max_size = 12, .segment_count = 1 });
+    var cache = try StringCache(TestSized).init(t.io, t.allocator, .{ .max_size = 12, .segment_count = 1 });
     defer cache.deinit();
 
     try cache.put("k1", .{ .id = 1, .s = 1 }, .{});
@@ -328,14 +377,14 @@ test "cache: enforce sized() " {
 }
 
 test "cache: get max_size" {
-    var cache = try Cache(i32).init(t.io, t.allocator, .{ .max_size = 1100, .segment_count = 8 });
+    var cache = try StringCache(i32).init(t.io, t.allocator, .{ .max_size = 1100, .segment_count = 8 });
     defer cache.deinit();
 
     try t.expectEqual(@as(usize, 1096), cache.maxSize());
 }
 
 test "cache: delPrefix" {
-    var cache = try Cache(i32).init(t.io, t.allocator, .{ .max_size = 100 });
+    var cache = try StringCache(i32).init(t.io, t.allocator, .{ .max_size = 100 });
     defer cache.deinit();
 
     try cache.put("a1", 1, .{});
@@ -368,7 +417,7 @@ test "cache: delPrefix" {
 
 // if NotifiedValue.deinit isn't called, we expect a memory leak to be detected
 test "cache: entry has deinit" {
-    var cache = try Cache(NotifiedValue).init(t.io, t.allocator, .{ .segment_count = 1, .max_size = 2 });
+    var cache = try StringCache(NotifiedValue).init(t.io, t.allocator, .{ .segment_count = 1, .max_size = 2 });
     defer cache.deinit();
 
     try cache.put("k1", NotifiedValue.init("abc"), .{});
@@ -388,12 +437,12 @@ test "cache: entry has deinit" {
 
 // contains_only == true is necesary for some tests because calling cache.get can
 // modify the cache (e.g. if an item is expired)
-fn testSingleSegmentCache(cache: *Cache(i32), expected_keys: []const []const u8, expected_values: []const i32, contains_only: bool) !void {
+fn testSingleSegmentCache(c: *StringCache(i32), expected_keys: []const []const u8, expected_values: []const i32, contains_only: bool) !void {
     for (expected_keys, expected_values) |k, v| {
         if (contains_only) {
-            try t.expectEqual(true, cache.contains(k));
+            try t.expectEqual(true, c.contains(k));
         } else {
-            const entry = cache.get(k).?;
+            const entry = c.get(k).?;
             try t.expectEqual(v, entry.value);
             entry.release();
         }
@@ -403,7 +452,7 @@ fn testSingleSegmentCache(cache: *Cache(i32), expected_keys: []const []const u8,
     // figure it out, but we're testing this assuming that if 1 segment works
     // N segment works. This seems reasonable since there's no real link between
     // segments)
-    try testList(cache.segments[0].list, expected_values);
+    try testList(c.segments[0].list, expected_values);
 }
 
 const NotifiedValue = struct {
@@ -434,7 +483,7 @@ fn doFetch(state: *FetchState, key: []const u8) !?i32 {
 }
 
 const List = @import("list.zig").List;
-fn testList(list: List(*Entry(i32)), expected: []const i32) !void {
+fn testList(list: List(*StringCache(i32).Entry), expected: []const i32) !void {
     var node = list.head;
     for (expected) |e| {
         try t.expectEqual(e, node.?.value.value);
@@ -459,3 +508,119 @@ const TestSized = struct {
         return self.s;
     }
 };
+
+// A by-value key: no clone/free, no isPrefix
+const U32Context = struct {
+    pub fn hash(key: u32) u64 {
+        return std.hash.Wyhash.hash(0, std.mem.asBytes(&key));
+    }
+    pub fn eql(a: u32, b: u32) bool {
+        return a == b;
+    }
+};
+
+test "cache: custom key type (by value)" {
+    var cache = try Cache(u32, []const u8, U32Context).init(t.io, t.allocator, .{ .segment_count = 2, .max_size = 100 });
+    defer cache.deinit();
+
+    try t.expectEqual(false, cache.contains(1));
+    try t.expectEqual(@as(?*Cache(u32, []const u8, U32Context).Entry, null), cache.get(1));
+
+    try cache.put(1, "one", .{});
+    try cache.put(2, "two", .{});
+    try t.expectEqual(true, cache.contains(1));
+    try t.expectEqual(true, cache.contains(2));
+
+    {
+        const e = cache.get(1).?;
+        defer e.release();
+        try t.expectEqual(@as(u32, 1), e.key);
+        try t.expectString("one", e.value);
+    }
+
+    try cache.put(1, "uno", .{});
+    {
+        const e = cache.get(1).?;
+        defer e.release();
+        try t.expectString("uno", e.value);
+    }
+
+    {
+        const e = (try cache.fetch(void, 3, fetchU32, {}, .{})).?;
+        defer e.release();
+        try t.expectEqual(@as(u32, 3), e.key);
+        try t.expectString("fetched", e.value);
+    }
+
+    try t.expectEqual(true, cache.del(1));
+    try t.expectEqual(false, cache.del(1));
+    try t.expectEqual(false, cache.contains(1));
+    try t.expectEqual(true, cache.contains(2));
+}
+
+fn fetchU32(_: void, _: u32) !?[]const u8 {
+    return "fetched";
+}
+
+// A key which owns memory and therefore needs clone/free. Case-insensitive
+// matching to prove the context's hash/eql are actually what's being used.
+const CaseInsensitiveContext = struct {
+    pub fn hash(key: []const u8) u64 {
+        var h = std.hash.Wyhash.init(0);
+        for (key) |c| {
+            h.update(&.{std.ascii.toLower(c)});
+        }
+        return h.final();
+    }
+    pub fn eql(a: []const u8, b: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(a, b);
+    }
+    pub fn clone(allocator: Allocator, key: []const u8) ![]const u8 {
+        return allocator.dupe(u8, key);
+    }
+    pub fn free(allocator: Allocator, key: []const u8) void {
+        allocator.free(key);
+    }
+    pub fn isPrefix(prefix: []const u8, key: []const u8) bool {
+        return std.ascii.startsWithIgnoreCase(key, prefix);
+    }
+};
+
+test "cache: custom context (hash/eql/clone/free/isPrefix)" {
+    var cache = try Cache([]const u8, i32, CaseInsensitiveContext).init(t.io, t.allocator, .{ .segment_count = 4, .max_size = 100 });
+    defer cache.deinit();
+
+    // key is cloned: mutating the caller's buffer must not affect the cache
+    var buf = "Hello".*;
+    try cache.put(&buf, 1, .{});
+    buf[0] = 'J';
+    try t.expectEqual(true, cache.contains("hello"));
+    try t.expectEqual(true, cache.contains("HELLO"));
+    try t.expectEqual(false, cache.contains("jello"));
+
+    {
+        const e = cache.get("hELLo").?;
+        defer e.release();
+        try t.expectString("Hello", e.key);
+        try t.expectEqual(@as(i32, 1), e.value);
+    }
+
+    // overwrite via different casing, replaces the entry (and its key)
+    try cache.put("HELLO", 2, .{});
+    {
+        const e = cache.get("hello").?;
+        defer e.release();
+        try t.expectString("HELLO", e.key);
+        try t.expectEqual(@as(i32, 2), e.value);
+    }
+
+    try cache.put("World", 3, .{});
+    try cache.put("HeLp", 4, .{});
+    try t.expectEqual(@as(usize, 2), try cache.delPrefix("he"));
+    try t.expectEqual(false, cache.contains("hello"));
+    try t.expectEqual(false, cache.contains("help"));
+    try t.expectEqual(true, cache.contains("world"));
+
+    try t.expectEqual(true, cache.del("WORLD"));
+    try t.expectEqual(false, cache.contains("world"));
+}

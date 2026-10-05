@@ -1,7 +1,7 @@
 A thread-safe, expiration-aware, LRU(ish) cache for Zig
 
 ## Zig Version
-This is for Zig 0.16.0. Use the [zig-0.15](https://github.com/karlseguin/cached.zig/tree/zig-0.15) branch for Zig 0.15 or the [dev](https://github.com/karlseguin/cached.zig/tree/dev) which may or may not be up to date with zig dev.
+This is for Zig 0.17.0. See branches for other supported versions.
 
 ## Example
 
